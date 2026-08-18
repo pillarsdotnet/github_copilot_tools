@@ -1,0 +1,62 @@
+#!/bin/bash
+#
+# Check if a Copilot review is NOT a sentinel (has outstanding comments).
+#
+# A sentinel review contains "generated no new comments", meaning Copilot
+# found no new issues to report. This script returns 0 if the review is
+# NOT a sentinel (still has outstanding comments).
+#
+# Usage: not-sentinel-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID>
+# Example: not-sentinel-review owner/repo 116 4964619882
+#
+# Exit codes:
+#   0 = Review is NOT a sentinel (has comments that need addressing)
+#   1 = Review IS a sentinel (no new comments found)
+#   2 = Review not found or error
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+REVIEW_ID="$3"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]] || [[ -z "$REVIEW_ID" ]]; then
+  echo "Usage: not-sentinel-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID>" >&2
+  echo "Example: not-sentinel-review owner/repo 116 4964619882" >&2
+  exit 2
+fi
+
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 2
+fi
+
+REVIEW_BODY=$(gh api graphql -f query="query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      reviews(first: 100) {
+        edges {
+          node {
+            databaseId
+            body
+          }
+        }
+      }
+    }
+  }
+}" 2>/dev/null | jq -r ".data.repository.pullRequest.reviews.edges[] | select(.node.databaseId == $REVIEW_ID) | .node.body")
+
+if [[ -z "$REVIEW_BODY" ]]; then
+  echo "Error: Review not found" >&2
+  exit 2
+fi
+
+if echo "$REVIEW_BODY" | grep -q "generated no new comments"; then
+  # This IS a sentinel, so NOT a sentinel = false (exit 1)
+  exit 1
+else
+  # This is NOT a sentinel, so NOT a sentinel = true (exit 0)
+  exit 0
+fi

@@ -187,25 +187,30 @@ hide-pr-review 116 $(latest-copilot-review-id 116) "Resolved"
 
 ---
 
-### 6. `is-sentinel-review` - Check for sentinel review
+### 6. `not-sentinel-review` - Check if review has outstanding comments
 
-Check if a Copilot review is a sentinel (contains "generated no new comments").
+Check if a Copilot review is NOT a sentinel (still has outstanding comments).
+
+A sentinel review contains "generated no new comments", indicating Copilot found
+no new issues. This script returns 0 if the review is NOT a sentinel (still has
+comments that need addressing).
 
 ```bash
-is-sentinel-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID>
+not-sentinel-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID>
 ```
 
 **Examples:**
 ```bash
-is-sentinel-review owner/repo 116 4964619882
-if is-sentinel-review owner/repo 116 $(latest-copilot-review-id owner/repo 116); then
-  echo "Sentinel review found!"
+not-sentinel-review owner/repo 116 4964619882
+if not-sentinel-review owner/repo 116 $(latest-copilot-review-id owner/repo 116); then
+  echo "Review has outstanding comments that need fixing"
 fi
 ```
 
 **Exit codes:**
-- `0` = Review is a sentinel
-- `1` = Review is not a sentinel or not found
+- `0` = Review is NOT a sentinel (has comments to address)
+- `1` = Review IS a sentinel (no new comments found)
+- `2` = Review not found or error
 
 ---
 
@@ -340,14 +345,14 @@ REPO="owner/repo"
 PR=116
 LATEST=$(latest-copilot-review-id "$REPO" "$PR")
 
-if is-sentinel-review "$REPO" "$PR" "$LATEST" && ! has-post-sentinel-commits "$REPO" "$PR"; then
+if ! not-sentinel-review "$REPO" "$PR" "$LATEST" && ! has-post-sentinel-commits "$REPO" "$PR"; then
   echo "✓ PR is ready for merge!"
-  echo "  - Latest Copilot review is a sentinel"
+  echo "  - Latest Copilot review is a sentinel (no outstanding comments)"
   echo "  - No new commits after review"
 else
   echo "✗ PR needs attention"
-  if ! is-sentinel-review "$REPO" "$PR" "$LATEST"; then
-    echo "  - Latest review has open issues"
+  if not-sentinel-review "$REPO" "$PR" "$LATEST"; then
+    echo "  - Latest review has outstanding comments to address"
   fi
   if has-post-sentinel-commits "$REPO" "$PR"; then
     echo "  - New commits after review"
