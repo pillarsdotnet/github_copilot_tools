@@ -1,0 +1,53 @@
+#!/bin/bash
+#
+# Get all open (unresolved) review threads on a PR.
+#
+# Usage: open-review-threads <REPO> <PR_NUMBER>
+# Example: open-review-threads owner/repo 116
+#
+# Output: JSON array with id, path, line, and comment body for each thread
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: open-review-threads <REPO> <PR_NUMBER>" >&2
+  echo "Example: open-review-threads owner/repo 116" >&2
+  exit 1
+fi
+
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 1
+fi
+
+gh api graphql -f query="query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      reviewThreads(first: 50) {
+        edges {
+          node {
+            id
+            isResolved
+            path
+            line
+            comments(first: 1) {
+              edges {
+                node {
+                  body
+                  author {
+                    login
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}" 2>/dev/null | jq '.data.repository.pullRequest.reviewThreads.edges[] | select(.node.isResolved == false) | {id: .node.id, path: .node.path, line: .node.line, author: .node.comments.edges[0].node.author.login, body: .node.comments.edges[0].node.body}'

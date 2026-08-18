@@ -1,0 +1,106 @@
+#!/bin/bash
+#
+# Check if there are code commits subsequent to the latest Copilot review
+# that change any files changed by the PR.
+#
+# Usage: has-post-sentinel-commits <REPO> <PR_NUMBER>
+# Example: has-post-sentinel-commits owner/repo 116
+#
+# Exit code: 0 if there are post-sentinel commits changing PR files, 1 otherwise
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: has-post-sentinel-commits <REPO> <PR_NUMBER>" >&2
+  echo "Example: has-post-sentinel-commits owner/repo 116" >&2
+  exit 1
+fi
+
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 1
+fi
+
+PR_DATA=$(gh api graphql -f query="query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      updatedAt
+      commits(last: 1) {
+        edges {
+          node {
+            committedDate
+          }
+        }
+      }
+      reviews(first: 100) {
+        edges {
+          node {
+            databaseId
+            createdAt
+            author {
+              login
+            }
+          }
+        }
+      }
+      files(first: 100) {
+        edges {
+          node {
+            path
+          }
+        }
+      }
+    }
+  }
+}" 2>/dev/null)
+
+LATEST_REVIEW_TIME=$(echo "$PR_DATA" | jq -r '.data.repository.pullRequest.reviews.edges[] | select(.node.author.login == "copilot-pull-request-reviewer") | .node.createdAt' | sort -r | head -1)
+
+if [[ -z "$LATEST_REVIEW_TIME" ]]; then
+  exit 1
+fi
+
+PR_FILES=$(echo "$PR_DATA" | jq -r '.data.repository.pullRequest.files.edges[].node.path')
+
+COMMITS_AFTER=$(gh api graphql -f query="query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    defaultBranchRef {
+      target {
+        ... on Commit {
+          history(first: 100) {
+            edges {
+              node {
+                committedDate
+                changedFiles
+                files(first: 100) {
+                  edges {
+                    node {
+                      path
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}" 2>/dev/null | jq -r ".data.repository.defaultBranchRef.target.history.edges[] | select(.node.committedDate > \"$LATEST_REVIEW_TIME\") | .node.files.edges[].node.path" | sort -u)
+
+if [[ -z "$COMMITS_AFTER" ]]; then
+  exit 1
+fi
+
+for file in $PR_FILES; do
+  if echo "$COMMITS_AFTER" | grep -q "^$file\$"; then
+    exit 0
+  fi
+done
+
+exit 1

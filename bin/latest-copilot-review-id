@@ -1,0 +1,53 @@
+#!/bin/bash
+#
+# Find the databaseId of the latest GitHub Copilot review on a PR.
+#
+# Usage: latest-copilot-review-id <REPO> <PR_NUMBER>
+# Example: latest-copilot-review-id owner/repo 116
+#
+# Output: Just the databaseId (suitable for piping to other tools)
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: latest-copilot-review-id <REPO> <PR_NUMBER>" >&2
+  echo "Example: latest-copilot-review-id owner/repo 116" >&2
+  exit 1
+fi
+
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 1
+fi
+
+REVIEWS_JSON=$(gh api graphql \
+  -f query="query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      reviews(first: 100) {
+        edges {
+          node {
+            databaseId
+            author {
+              login
+            }
+          }
+        }
+      }
+    }
+  }
+}" 2>/dev/null)
+
+LATEST_ID=$(echo "$REVIEWS_JSON" | jq -r '.data.repository.pullRequest.reviews.edges[] | select(.node.author.login == "copilot-pull-request-reviewer") | .node.databaseId' | tail -1)
+
+if [[ -z "$LATEST_ID" ]]; then
+  echo "Error: No Copilot reviews found on $REPO #$PR_NUMBER" >&2
+  exit 1
+fi
+
+echo "$LATEST_ID"

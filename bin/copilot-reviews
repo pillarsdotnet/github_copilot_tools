@@ -1,0 +1,53 @@
+#!/bin/bash
+#
+# Get all open (unhidden) GitHub Copilot reviews on a PR.
+#
+# Usage: copilot-reviews <REPO> <PR_NUMBER>
+# Example: copilot-reviews owner/repo 116
+#
+# Output: JSON array with id, databaseId, and body for each review
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: copilot-reviews <REPO> <PR_NUMBER>" >&2
+  echo "Example: copilot-reviews owner/repo 116" >&2
+  exit 1
+fi
+
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 1
+fi
+
+gh api graphql -f query="query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      reviews(first: 100) {
+        edges {
+          node {
+            id
+            databaseId
+            body
+            author {
+              login
+            }
+            comments(first: 1) {
+              edges {
+                node {
+                  isMinimized
+                  minimizedReason
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}" 2>/dev/null | jq '.data.repository.pullRequest.reviews.edges[] | select(.node.author.login == "copilot-pull-request-reviewer" and (.node.comments.edges[0].node.isMinimized // false) == false) | {id: .node.id, databaseId: .node.databaseId, body: .node.body}'

@@ -1,0 +1,96 @@
+#!/bin/bash
+#
+# Resolve open review threads on a GitHub PR.
+#
+# Usage: resolve-pr-review-threads <REPO> <PR_NUMBER>
+# Example: resolve-pr-review-threads owner/repo 116
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: resolve-pr-review-threads <REPO> <PR_NUMBER>" >&2
+  echo "Example: resolve-pr-review-threads owner/repo 116" >&2
+  exit 1
+fi
+
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 1
+fi
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  Resolving review threads for $REPO #$PR_NUMBER"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+
+echo "🔍 Finding unresolved review threads..."
+THREADS_JSON=$(gh api graphql \
+  -f query="query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      reviewThreads(first: 50) {
+        edges {
+          node {
+            id
+            isResolved
+          }
+        }
+      }
+    }
+  }
+}" 2>/dev/null)
+
+THREAD_IDS=$(echo "$THREADS_JSON" | jq -r '.data.repository.pullRequest.reviewThreads.edges[] | select(.node.isResolved == false) | .node.id')
+
+if [[ -z "$THREAD_IDS" ]]; then
+  echo "✓ No unresolved review threads found"
+  exit 0
+fi
+
+THREAD_COUNT=$(echo "$THREAD_IDS" | wc -l)
+echo "✓ Found $THREAD_COUNT unresolved thread(s)"
+echo ""
+
+RESOLVED_COUNT=0
+FAILED_COUNT=0
+
+for THREAD_ID in $THREAD_IDS; do
+  echo "Resolving thread: $THREAD_ID..."
+  
+  RESULT=$(gh api graphql \
+    -f threadId="$THREAD_ID" \
+    -f query='mutation ResolveThread($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    clientMutationId
+  }
+}' 2>/dev/null || echo '{"errors":[{"message":"API error"}]}')
+  
+  if echo "$RESULT" | jq -e '.errors' > /dev/null 2>&1; then
+    echo "  ✗ Failed to resolve"
+    FAILED_COUNT=$((FAILED_COUNT + 1))
+  else
+    echo "  ✓ Resolved"
+    RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
+  fi
+done
+
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "  Summary"
+echo "════════════════════════════════════════════════════════════════"
+echo "Resolved:  $RESOLVED_COUNT"
+echo "Failed:    $FAILED_COUNT"
+echo ""
+
+if [[ $FAILED_COUNT -eq 0 ]]; then
+  echo "✓ All review threads resolved!"
+  exit 0
+else
+  echo "✗ Some threads failed to resolve"
+  exit 1
+fi
