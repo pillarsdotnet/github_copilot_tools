@@ -335,6 +335,63 @@ done
 
 ---
 
+### 10. `is-rebase-only` - Analyze if changes are from rebasing
+
+Compare files changed between branches to determine if a branch contains
+only rebased changes or also has new local modifications.
+
+```bash
+is-rebase-only <BASE_BRANCH> <HEAD_BRANCH>
+```
+
+**Examples:**
+```bash
+is-rebase-only origin/main feature/my-feature
+is-rebase-only origin/main HEAD
+```
+
+**Output:**
+```
+════════════════════════════════════════════════════════════════════
+Rebase Analysis: origin/main → feature/vincrr/pre-commit → HEAD
+════════════════════════════════════════════════════════════════════
+
+Files changed in PR (BASE → HEAD):
+  Total: 26
+
+Files changed locally (HEAD → current):
+  Total: 1
+
+Files changed in BOTH (rebased + locally modified):
+  Total: 1
+
+════════════════════════════════════════════════════════════════════
+
+⚠ Mixed: Branch has both rebased changes and new local changes
+  1 file(s) were modified and then rebased
+```
+
+**Analysis outputs:**
+- `✓ Pure rebase` = No local changes beyond remote HEAD (only rebasing occurred)
+- `✓ No rebase needed` = All changes are new local commits (no rebasing)
+- `⚠ Mixed` = Both rebased changes and new local modifications present
+
+**Use cases:**
+```bash
+# Check if a branch only has rebase changes
+is-rebase-only origin/main feature/branch-name
+
+# Check if current branch matches remote HEAD exactly
+is-rebase-only origin/main HEAD
+
+# Use in scripts
+if is-rebase-only origin/main HEAD | grep -q "Pure rebase"; then
+  echo "Ready to push rebase"
+fi
+```
+
+---
+
 ## Common Workflows
 
 ### Workflow 1: Check if PR is ready for merge
