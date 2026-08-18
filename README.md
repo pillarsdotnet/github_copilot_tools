@@ -282,6 +282,53 @@ latest-ci-result owner/repo 116 | jq '.conclusion'
 
 ---
 
+### 9. `checkout-pr-branch` - Checkout the branch for a PR
+
+Switch to the local branch corresponding to a given PR.
+
+```bash
+checkout-pr-branch <REPO> <PR_NUMBER>
+```
+
+**Examples:**
+```bash
+checkout-pr-branch owner/repo 116
+checkout-pr-branch owner/repo 116
+```
+
+**Output:**
+```
+✓ Checked out branch: feature/vincrr/pre-commit
+54840f6 fix: provide Vale executable for commit-msg hook and exclude Vale config files
+```
+
+**Exit codes:**
+- `0` = Successfully checked out branch
+- `1` = PR not found or branch checkout failed
+- `2` = Already on target branch
+- `3` = Invalid arguments
+- `4` = Branch doesn't exist locally (can fetch with git fetch)
+
+**Usage examples:**
+```bash
+# Switch to PR branch and review
+checkout-pr-branch owner/repo 116
+git log --oneline -10
+git diff origin/main
+
+# Switch to PR and check status
+checkout-pr-branch owner/repo 116 && git status
+
+# Loop through multiple PRs
+for pr in 115 116 117; do
+  checkout-pr-branch owner/repo $pr
+  echo "PR #$pr:"
+  git log -1 --oneline
+done
+```
+
+---
+
 ## Common Workflows
 
 ### Workflow 1: Check if PR is ready for merge

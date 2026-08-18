@@ -1,0 +1,78 @@
+#!/bin/bash
+#
+# Checkout the local branch corresponding to a PR.
+#
+# Fetches the head branch name from GitHub for a given PR and checks it out
+# locally. Useful for switching to a PR's branch for testing or review.
+#
+# Usage: checkout-pr-branch <REPO> <PR_NUMBER>
+# Example: checkout-pr-branch owner/repo 116
+#          checkout-pr-branch owner/repo 116
+#
+# Exit codes:
+#   0 = Successfully checked out branch
+#   1 = PR not found or branch checkout failed
+#   2 = Already on target branch
+#   3 = Invalid arguments
+#   4 = Branch doesn't exist locally (can fetch with git fetch)
+#
+
+set -e
+
+# Arguments
+REPO="$1"
+PR_NUMBER="$2"
+
+# Validation
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: checkout-pr-branch <REPO> <PR_NUMBER>" >&2
+  echo "Example: checkout-pr-branch owner/repo 116" >&2
+  exit 3
+fi
+
+# Parse repo
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 3
+fi
+
+# Fetch PR head branch name
+HEAD_BRANCH=$(gh pr view "$PR_NUMBER" \
+  --repo "$REPO" \
+  --json headRefName \
+  --jq '.headRefName' 2>/dev/null || true)
+
+if [[ -z "$HEAD_BRANCH" ]]; then
+  echo "Error: Could not find PR #$PR_NUMBER on $REPO" >&2
+  exit 1
+fi
+
+# Get current branch
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+
+# Check if already on target branch
+if [[ "$CURRENT_BRANCH" == "$HEAD_BRANCH" ]]; then
+  echo "✓ Already on branch: $HEAD_BRANCH"
+  exit 2
+fi
+
+# Try to checkout the branch
+if git checkout "$HEAD_BRANCH" 2>/dev/null; then
+  echo "✓ Checked out branch: $HEAD_BRANCH"
+  
+  # Show branch status
+  git log -1 --oneline
+  exit 0
+else
+  # Branch doesn't exist locally
+  echo "Error: Branch '$HEAD_BRANCH' does not exist locally" >&2
+  echo ""
+  echo "Branch exists on remote. To fetch and track it:" >&2
+  echo "  git fetch origin $HEAD_BRANCH:$HEAD_BRANCH" >&2
+  echo "  git checkout $HEAD_BRANCH" >&2
+  echo ""
+  echo "Or fetch all remote branches:" >&2
+  echo "  git fetch origin" >&2
+  exit 4
+fi
