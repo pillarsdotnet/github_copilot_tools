@@ -1,26 +1,46 @@
 #!/bin/bash
-# Hide a GitHub PR review with reason "Resolved"
-# Usage: hide-pr-review <PR_NUMBER> <REVIEW_ID>
-# Example: hide-pr-review 116 4963098756
+#
+# Hide a GitHub PR review with reason "Resolved".
+#
+# Usage: hide-pr-review <REPO> <PR_NUMBER> <REVIEW_ID> [REASON]
+# Example: hide-pr-review owner/repo 116 4963098756
+#          hide-pr-review owner/repo 116 4963098756 "Addressed"
+#
+# Exit codes:
+#   0 = Successfully hidden review
+#   1 = Failed to hide review or invalid arguments
+#
 
 set -e
 
-if [ $# -lt 2 ]; then
-    echo "Usage: hide-pr-review <PR_NUMBER> <REVIEW_ID>"
-    echo "Example: hide-pr-review 116 4963098756"
-    exit 1
+# Arguments
+REPO="$1"
+PR_NUMBER="$2"
+REVIEW_ID="$3"
+REASON="${4:-Resolved}"
+
+# Validation
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]] || [[ -z "$REVIEW_ID" ]]; then
+  echo "Usage: hide-pr-review <REPO> <PR_NUMBER> <REVIEW_ID> [REASON]" >&2
+  echo "Example: hide-pr-review owner/repo 116 4963098756" >&2
+  echo "         hide-pr-review owner/repo 116 4963098756 \"Addressed\"" >&2
+  exit 1
 fi
 
-PR=$1
-REVIEW_ID=$2
+# Parse repo
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 1
+fi
 
-echo "🔍 Fetching review comment ID for review #$REVIEW_ID on PR #$PR..."
+echo "🔍 Fetching review comment ID for review #$REVIEW_ID on $REPO PR #$PR_NUMBER..."
 
 # Get the comment ID of the review (first comment in the review)
 COMMENT_ID=$(gh api graphql -f query='
 query {
-  repository(owner: "owner", name: "repo") {
-    pullRequest(number: '$PR') {
+  repository(owner: "'$OWNER'", name: "'$REPO_NAME'") {
+    pullRequest(number: '$PR_NUMBER') {
       reviews(first: 50) {
         nodes {
           databaseId
@@ -36,14 +56,14 @@ query {
 }
 ' 2>/dev/null | jq -r ".data.repository.pullRequest.reviews.nodes[] | select(.databaseId == $REVIEW_ID) | .comments.nodes[0].id" | head -1)
 
-if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = "null" ]; then
-    echo "❌ Could not find comment ID for review #$REVIEW_ID"
-    exit 1
+if [[ -z "$COMMENT_ID" ]] || [[ "$COMMENT_ID" == "null" ]]; then
+  echo "Error: Could not find comment ID for review #$REVIEW_ID" >&2
+  exit 1
 fi
 
 echo "✓ Found comment ID: $COMMENT_ID"
 echo ""
-echo "🔒 Hiding review with reason 'Resolved'..."
+echo "🔒 Hiding review with reason '$REASON'..."
 
 RESULT=$(gh api graphql -f commentId="$COMMENT_ID" -f query='
 mutation($commentId: ID!) {
@@ -57,16 +77,13 @@ mutation($commentId: ID!) {
 ' 2>/dev/null)
 
 IS_MINIMIZED=$(echo "$RESULT" | jq -r '.data.minimizeComment.minimizedComment.isMinimized')
-REASON=$(echo "$RESULT" | jq -r '.data.minimizeComment.minimizedComment.minimizedReason')
+MINIMIZED_REASON=$(echo "$RESULT" | jq -r '.data.minimizeComment.minimizedComment.minimizedReason')
 
-if [ "$IS_MINIMIZED" = "true" ]; then
-    echo "✅ Successfully hidden review $REVIEW_ID with reason \"$REASON\"!"
-    echo ""
-    echo "The review now shows:"
-    echo "  • isMinimized: true"
-    echo "  • minimizedReason: \"$REASON\""
+if [[ "$IS_MINIMIZED" == "true" ]]; then
+  echo "✅ Successfully hidden review $REVIEW_ID with reason \"$MINIMIZED_REASON\"!"
+  exit 0
 else
-    echo "❌ Failed to hide review"
-    echo "$RESULT" | jq '.'
-    exit 1
+  echo "Error: Failed to hide review" >&2
+  echo "$RESULT" | jq '.' >&2
+  exit 1
 fi

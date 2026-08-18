@@ -141,18 +141,19 @@ Failed:    0
 Hide an open review by database ID with an optional custom reason.
 
 ```bash
-hide-pr-review <PR_NUMBER> <REVIEW_DATABASE_ID> [REASON]
+hide-pr-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID> [REASON]
 ```
 
 **Examples:**
 ```bash
-hide-pr-review 116 4964619882              # Uses reason "Resolved"
-hide-pr-review 116 4964619882 "Addressed"  # Custom reason
+hide-pr-review owner/repo 116 4964619882              # Uses reason "Resolved"
+hide-pr-review owner/repo 116 4964619882             # Uses reason "Resolved"
+hide-pr-review owner/repo 116 4964619882 "Addressed" # Custom reason
 ```
 
 **Output:**
 ```
-🔍 Fetching review comment ID for review #4964619882 on PR #116...
+🔍 Fetching review comment ID for review #4964619882 on owner/repo PR #116...
 ✓ Found comment ID: PRRC_kwDOMImQKc7i6aSG
 
 🔒 Hiding review with reason 'Resolved'...
@@ -182,7 +183,7 @@ latest-copilot-review-id owner/repo 116
 
 **Piping example:**
 ```bash
-hide-pr-review 116 $(latest-copilot-review-id 116) "Resolved"
+hide-pr-review owner/repo 116 $(latest-copilot-review-id owner/repo 116) "Resolved"
 ```
 
 ---
