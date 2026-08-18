@@ -188,7 +188,57 @@ hide-pr-review owner/repo 116 $(latest-copilot-review-id owner/repo 116) "Resolv
 
 ---
 
-### 6. `not-sentinel-review` - Check if review has outstanding comments
+### 6. `review-database-ids` - Get all review database IDs
+
+Extract all database IDs from Copilot reviews on a PR, one per line. Useful for
+piping to other commands or looping over reviews.
+
+```bash
+review-database-ids <REPO> <PR_NUMBER>
+```
+
+**Examples:**
+```bash
+review-database-ids owner/repo 116
+review-database-ids owner/repo 116
+```
+
+**Output:** One databaseId per line
+```
+4941808346
+4952409221
+4952485496
+4952676973
+4953049700
+```
+
+**Piping examples:**
+```bash
+# Count reviews
+review-database-ids owner/repo 116 | wc -l
+
+# Loop over review IDs
+review-database-ids owner/repo 116 | while read id; do
+  hide-pr-review owner/repo 116 "$id"
+done
+
+# Store in bash array
+mapfile -t REVIEW_IDS < <(review-database-ids owner/repo 116)
+for id in "${REVIEW_IDS[@]}"; do
+  echo "Review: $id"
+done
+
+# Combine with other operations
+review-database-ids owner/repo 116 | head -1 | xargs -I {} hide-pr-review owner/repo 116 {}
+```
+
+**Exit codes:**
+- `0` = Success (even if no reviews found)
+- `1` = Invalid arguments
+
+---
+
+### 7. `not-sentinel-review` - Check if review has outstanding comments
 
 Check if a Copilot review is NOT a sentinel (still has outstanding comments).
 
@@ -215,7 +265,7 @@ fi
 
 ---
 
-### 7. `has-post-sentinel-commits` - Check for new commits after review
+### 8. `has-post-sentinel-commits` - Check for new commits after review
 
 Check if any commits after the latest Copilot review modified files changed by the PR.
 
@@ -237,7 +287,7 @@ fi
 
 ---
 
-### 8. `latest-ci-result` - Fetch the latest CI result
+### 9. `latest-ci-result` - Fetch the latest CI result
 
 Get the most recent CI/workflow run status for a repository or specific PR.
 
@@ -288,7 +338,7 @@ latest-ci-result owner/repo 116 | jq '.conclusion'
 
 ---
 
-### 9. `checkout-pr-branch` - Checkout the branch for a PR
+### 10. `checkout-pr-branch` - Checkout the branch for a PR
 
 Switch to the local branch corresponding to a given PR.
 
@@ -335,7 +385,7 @@ done
 
 ---
 
-### 10. `is-rebase-only` - Analyze if changes are from rebasing
+### 11. `is-rebase-only` - Analyze if changes are from rebasing
 
 Compare files changed between branches to determine if a branch contains
 only rebased changes or also has new local modifications.
