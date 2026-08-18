@@ -9,6 +9,7 @@ These tools automate common workflows for handling GitHub Copilot code reviews, 
 - Managing review threads
 - Detecting sentinel reviews (no new comments)
 - Checking for post-review code changes
+- Fetching latest CI/workflow results
 
 All scripts use the GitHub CLI (`gh`) and GraphQL API for reliable, efficient PR management.
 
@@ -227,6 +228,57 @@ fi
 **Exit codes:**
 - `0` = There are post-review commits changing PR files
 - `1` = No such commits or no review exists
+
+---
+
+### 8. `latest-ci-result` - Fetch the latest CI result
+
+Get the most recent CI/workflow run status for a repository or specific PR.
+
+```bash
+latest-ci-result <REPO> [PR_NUMBER]
+```
+
+**Examples:**
+```bash
+# Latest run across all branches
+latest-ci-result owner/repo
+
+# Latest run for a specific PR
+latest-ci-result owner/repo 116
+latest-ci-result owner/repo 116
+```
+
+**Output:** JSON with workflow run details
+```json
+{
+  "conclusion": "success",
+  "databaseId": 32172180710,
+  "displayTitle": "Running Copilot Code Review",
+  "headBranch": "feature/vincrr/pre-commit",
+  "name": "Running Copilot Code Review",
+  "status": "completed"
+}
+```
+
+**Exit codes:**
+- `0` = CI passed (success or skipped)
+- `1` = CI failed, cancelled, or timed out
+- `2` = No CI runs found
+- `3` = Invalid arguments
+
+**Usage in scripts:**
+```bash
+# Check if latest run passed
+if latest-ci-result owner/repo 116 > /dev/null; then
+  echo "CI passed, safe to merge"
+else
+  echo "CI failed, needs fixes"
+fi
+
+# Get detailed status
+latest-ci-result owner/repo 116 | jq '.conclusion'
+```
 
 ---
 

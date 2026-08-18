@@ -1,0 +1,103 @@
+#!/bin/bash
+#
+# Fetch the latest CI result for a repository or pull request.
+#
+# Queries GitHub Actions workflow runs and displays the status of the most
+# recent run. Can filter by PR number or show the latest run across all branches.
+#
+# Usage: latest-ci-result <REPO> [PR_NUMBER]
+# Example: latest-ci-result owner/repo
+#          latest-ci-result owner/repo 116
+#
+# Exit codes:
+#   0 = CI passed (success or skipped)
+#   1 = CI failed, cancelled, or timed out
+#   2 = No CI runs found
+#   3 = Invalid arguments
+#
+
+set -e
+
+# Arguments
+REPO="$1"
+PR_NUMBER="${2:-}"
+
+# Validation
+if [[ -z "$REPO" ]]; then
+  echo "Usage: latest-ci-result <REPO> [PR_NUMBER]" >&2
+  echo "Example: latest-ci-result owner/repo" >&2
+  echo "         latest-ci-result owner/repo 116" >&2
+  exit 3
+fi
+
+# Parse repo
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 3
+fi
+
+# Build gh command
+if [[ -n "$PR_NUMBER" ]]; then
+  # Get runs associated with a specific PR
+  RUN=$(gh run list \
+    --repo "$REPO" \
+    --limit 1 \
+    --json databaseId,status,conclusion,name,headBranch,displayTitle \
+    --jq '.[] | select(.displayTitle | contains("#'$PR_NUMBER'")) | .' 2>/dev/null || true)
+  
+  if [[ -z "$RUN" ]]; then
+    # Try alternative: fetch the PR's head branch and get latest run on that branch
+    HEAD_BRANCH=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName --jq '.headRefName' 2>/dev/null || true)
+    
+    if [[ -n "$HEAD_BRANCH" ]]; then
+      RUN=$(gh run list \
+        --repo "$REPO" \
+        --branch "$HEAD_BRANCH" \
+        --limit 1 \
+        --json databaseId,status,conclusion,name,headBranch,displayTitle \
+        --jq '.[]' 2>/dev/null || true)
+    fi
+  fi
+else
+  # Get the latest run across all branches
+  RUN=$(gh run list \
+    --repo "$REPO" \
+    --limit 1 \
+    --json databaseId,status,conclusion,name,headBranch,displayTitle \
+    --jq '.[]' 2>/dev/null || true)
+fi
+
+# Check if we found a run
+if [[ -z "$RUN" ]]; then
+  echo "Error: No CI runs found for $REPO" >&2
+  if [[ -n "$PR_NUMBER" ]]; then
+    echo "       (PR #$PR_NUMBER)" >&2
+  fi
+  exit 2
+fi
+
+# Output the result as JSON
+echo "$RUN" | jq .
+
+# Determine exit code based on conclusion
+CONCLUSION=$(echo "$RUN" | jq -r '.conclusion // "in_progress"')
+STATUS=$(echo "$RUN" | jq -r '.status // "unknown"')
+
+case "$CONCLUSION" in
+  success|skipped)
+    exit 0
+    ;;
+  failure|timed_out|cancelled)
+    exit 1
+    ;;
+  neutral)
+    # Neutral can be either success or failure depending on context
+    # Treat as success by default
+    exit 0
+    ;;
+  *)
+    # in_progress or unknown
+    exit 1
+    ;;
+esac
