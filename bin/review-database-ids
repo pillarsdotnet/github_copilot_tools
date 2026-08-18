@@ -1,0 +1,62 @@
+#!/bin/bash
+#
+# Extract databaseId values from copilot-reviews output.
+#
+# Outputs all databaseId values from copilot-reviews, one per line.
+# Useful for piping to other commands or looping over review IDs.
+#
+# Usage: review-database-ids <REPO> <PR_NUMBER>
+# Example: review-database-ids owner/repo 116
+#
+# Output: One databaseId per line
+#
+# Examples:
+#   # List all review IDs
+#   review-database-ids owner/repo 116
+#
+#   # Loop over review IDs
+#   review-database-ids owner/repo 116 | while read id; do
+#     echo "Review: $id"
+#   done
+#
+#   # Store in a variable (bash array)
+#   mapfile -t REVIEW_IDS < <(review-database-ids owner/repo 116)
+#
+#   # Count reviews
+#   review-database-ids owner/repo 116 | wc -l
+#
+# Exit codes:
+#   0 = Success (even if no reviews found)
+#   1 = Invalid arguments
+#
+
+# Arguments
+REPO="$1"
+PR_NUMBER="$2"
+
+# Validation
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: review-database-ids <REPO> <PR_NUMBER>" >&2
+  echo "Example: review-database-ids owner/repo 116" >&2
+  exit 1
+fi
+
+# Parse repo
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 1
+fi
+
+# Find copilot-reviews script
+# Try: same directory as this script, then PATH
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -x "$SCRIPT_DIR/copilot-reviews" ]]; then
+  COPILOT_REVIEWS="$SCRIPT_DIR/copilot-reviews"
+else
+  COPILOT_REVIEWS="copilot-reviews"
+fi
+
+# Get reviews and extract databaseId values
+# copilot-reviews returns JSON objects one per line (JSONL format)
+"$COPILOT_REVIEWS" "$REPO" "$PR_NUMBER" 2>/dev/null | jq -r '.databaseId'
