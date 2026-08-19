@@ -402,9 +402,9 @@ check-changed-files origin/main HEAD
 
 **Output:**
 ```
-════════════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════════════
 Rebase Analysis: origin/main → feature/vincrr/pre-commit → HEAD
-════════════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════════════
 
 Files changed in PR (BASE → HEAD):
   Total: 26
@@ -415,7 +415,7 @@ Files changed locally (HEAD → current):
 Files changed in BOTH (rebased + locally modified):
   Total: 1
 
-════════════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════════════
 
 ⚠ Mixed: Branch has both rebased changes and new local changes
   1 file(s) were modified and then rebased
@@ -426,15 +426,21 @@ Files changed in BOTH (rebased + locally modified):
 - `✓ No rebase needed` = All changes are new local commits (no rebasing)
 - `⚠ Mixed` = Both rebased changes and new local modifications present
 
+**Exit codes:**
+- `-1` = Error in arguments or processing
+- `0+` = Number of files changed beyond a simple rebase
+
 **Use cases:**
 ```bash
 # Check if a branch only has rebase changes
-check-changed-files origin/main feature/branch-name
-CHANGED_FILES=$?
+CHANGED_FILES=$(check-changed-files origin/main feature/branch-name)
+if [ "$CHANGED_FILES" -eq 0 ]; then
+  echo 'Rebase only; no local changes'
+fi
 
 # Use in scripts
-if check-changed-files origin/main HEAD; then
-  echo 'Rebase only; no local changes'
+if check-changed-files origin/main HEAD > /dev/null; then
+  echo "Files changed: $(check-changed-files origin/main HEAD)"
 fi
 ```
 

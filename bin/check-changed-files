@@ -10,10 +10,8 @@
 # Example: check-changed-files origin/main feature/my-feature
 #
 # Exit codes:
-#   0 = Analysis complete (check output for count)
-#   1 = Invalid arguments or branch not found
-#
-
+#  -1 = Error in arguments or processing
+#  0+ = Number of files changed beyond a simple rebase
 set -e
 
 # Arguments
@@ -28,18 +26,18 @@ if [[ -z "$BASE_BRANCH" ]] || [[ -z "$HEAD_BRANCH" ]]; then
   echo "Returns the number of files changed in both:" >&2
   echo "  - Between remote BASE and local HEAD" >&2
   echo "  - Between remote HEAD and local HEAD" >&2
-  exit 1
+  exit -1
 fi
 
 # Verify branches exist
 if ! git rev-parse "$BASE_BRANCH" > /dev/null 2>&1; then
   echo "Error: Branch not found: $BASE_BRANCH" >&2
-  exit 1
+  exit -1
 fi
 
 if ! git rev-parse "$HEAD_BRANCH" > /dev/null 2>&1; then
   echo "Error: Branch not found: $HEAD_BRANCH" >&2
-  exit 1
+  exit -1
 fi
 
 # Get files changed between remote BASE and local HEAD
