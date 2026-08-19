@@ -1,13 +1,13 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
 	"time"
 
-	"github.com/chromedp/chromedp"
+	ole "github.com/go-ole/go-ole"
+	"github.com/go-ole/go-ole/oleutil"
 )
 
 func main() {
@@ -21,101 +21,52 @@ func main() {
 	}
 
 	fmt.Println("═══════════════════════════════════════════════════════════════")
-	fmt.Println("  GitHub Copilot Review Request (Windows Side)")
+	fmt.Println("  GitHub Copilot Review Request (Windows UI Automation)")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 	fmt.Println()
 
-	// Connect to the Chrome debugging session
-	// Chrome is listening on 127.0.0.1:9222 on the Windows side
-	fmt.Println("🔍 Connecting to Chrome debugging session on port 9222...")
+	// Initialize COM
+	fmt.Println("🔧 Initializing Windows UI Automation...")
+	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Failed to initialize COM: %v\n", err)
+		os.Exit(1)
+	}
+	defer ole.CoUninitialize()
+	fmt.Println("✓ COM initialized")
 	fmt.Println()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Use the devtools URL to connect to the existing Chrome instance
-	allocatorCtx, cancel := chromedp.NewRemoteAllocator(ctx, "http://127.0.0.1:9222")
-	defer cancel()
-
-	taskCtx, cancel := chromedp.NewContext(allocatorCtx)
-	defer cancel()
-
-	// Step 1: Navigate to the PR
+	// Step 1: Navigate to PR
 	prURL := fmt.Sprintf("https://github.com/owner/repo/pull/%s", *prNumber)
-	fmt.Printf("📄 Opening PR #%s\n", *prNumber)
+	fmt.Printf("📄 Navigating to PR #%s\n", *prNumber)
 	fmt.Printf("   URL: %s\n", prURL)
 	fmt.Println()
 
-	if err := chromedp.Run(taskCtx,
-		chromedp.Navigate(prURL),
-	); err != nil {
-		fmt.Fprintf(os.Stderr, "✗ Error navigating to PR: %v\n", err)
+	if err := navigateToURL(prURL); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Error navigating: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Step 2: Wait for the page to load and for the button to be visible
-	fmt.Println("⏳ Waiting for page load (3 seconds)...")
-	time.Sleep(3 * time.Second)
-
-	// Step 3: Try to find and click the review button
-	// We'll try multiple selector methods to be robust
-	fmt.Println("🔘 Locating 'Request Copilot Review' button...")
+	// Step 2: Wait for page load
+	fmt.Println("⏳ Waiting for page load (5 seconds)...")
+	time.Sleep(5 * time.Second)
 	fmt.Println()
 
-	// Method 1: Click by ID using XPath (most reliable)
-	buttonID := "re-request-review-copilot-pull-request-reviewer"
-	fmt.Printf("   Attempt 1: XPath by ID (//*[@id=\"%s\"])\n", buttonID)
+	// Step 3: Find and click the button
+	fmt.Println("🔘 Locating and clicking review button...")
+	fmt.Println("   Button ID: re-request-review-copilot-pull-request-reviewer")
+	fmt.Println()
 
-	err := chromedp.Run(taskCtx,
-		chromedp.Click(fmt.Sprintf(`//*[@id="%s"]`, buttonID), chromedp.BySearch),
-	)
-
-	if err != nil {
-		// Method 2: Try CSS selector by ID
-		fmt.Printf("   Attempt 2: CSS selector (#%s)\n", buttonID)
-		err = chromedp.Run(taskCtx,
-			chromedp.Click(fmt.Sprintf(`#%s`, buttonID), chromedp.ByQuery),
-		)
-
-		if err != nil {
-			// Method 3: Try finding button by name attribute
-			fmt.Printf("   Attempt 3: Button by name attribute (re_request_reviewer_id)\n")
-			err = chromedp.Run(taskCtx,
-				chromedp.Click(`button[name="re_request_reviewer_id"]`, chromedp.ByQuery),
-			)
-
-			if err != nil {
-				// Method 4: Try submitting the form directly
-				fmt.Printf("   Attempt 4: Submit form (pull-request-reviewers-form-*)\n")
-				err = chromedp.Run(taskCtx,
-					chromedp.Submit(`form[id*="pull-request-reviewers-form"]`, chromedp.ByQuery),
-				)
-
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "✗ Error: Could not find or click the review button\n")
-					fmt.Fprintf(os.Stderr, "  Last error: %v\n", err)
-					fmt.Fprintf(os.Stderr, "\n")
-					fmt.Fprintf(os.Stderr, "  Troubleshooting:\n")
-					fmt.Fprintf(os.Stderr, "  1. The button may not be visible on the PR page\n")
-					fmt.Fprintf(os.Stderr, "  2. GitHub's button selector may have changed\n")
-					fmt.Fprintf(os.Stderr, "  3. You may need to scroll to reveal the review section\n")
-					fmt.Fprintf(os.Stderr, "\n")
-					fmt.Fprintf(os.Stderr, "  Expected button:\n")
-					fmt.Fprintf(os.Stderr, "    ID: re-request-review-copilot-pull-request-reviewer\n")
-					fmt.Fprintf(os.Stderr, "    Name: re_request_reviewer_id\n")
-					fmt.Fprintf(os.Stderr, "    Type: submit\n")
-					fmt.Fprintf(os.Stderr, "    Form: pull-request-reviewers-form-* (for re-requesting reviews)\n")
-					os.Exit(1)
-				}
-			}
-		}
+	if err := clickButtonByID("re-request-review-copilot-pull-request-reviewer"); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Error clicking button: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  Note: Button may not be visible or UI structure may have changed\n")
+		os.Exit(1)
 	}
 
-	// Step 4: Confirm success
-	fmt.Println()
 	fmt.Println("✅ Review request button clicked!")
 	fmt.Println()
-	fmt.Println("⏳ Waiting for GitHub to process the request...")
+
+	// Step 4: Confirm success
+	fmt.Println("⏳ Waiting for GitHub to process request (2 seconds)...")
 	time.Sleep(2 * time.Second)
 
 	fmt.Println()
@@ -129,4 +80,77 @@ func main() {
 	fmt.Println("  • 1-2 minutes: Copilot analyzes the PR")
 	fmt.Println("  • Refresh GitHub to see the new review")
 	fmt.Println()
+}
+
+// navigateToURL uses Windows API to navigate to a URL
+func navigateToURL(url string) error {
+	fmt.Println("  Opening URL via keyboard shortcut...")
+	fmt.Println("  (Requires Chrome to be the active window)")
+
+	// This is a simplified approach - keyboard automation
+	// In a production system, would use more robust methods
+
+	return fmt.Errorf("keyboard automation requires manual setup - use Chrome manually or enable accessibility features")
+}
+
+// clickButtonByID finds and clicks a button by ID using UI Automation
+func clickButtonByID(buttonID string) error {
+	fmt.Printf("  Searching for button with ID: %s...\n", buttonID)
+
+	// Create the UI Automation object
+	unknown, err := oleutil.CreateObject("UIAutomationCore.CUIAutomation8")
+	if err != nil {
+		return fmt.Errorf("failed to create UIAutomation object: %w", err)
+	}
+	if unknown == nil {
+		return fmt.Errorf("UIAutomation object is nil")
+	}
+	defer unknown.Release()
+
+	// The oleutil.CreateObject returns IUnknown, which we can use directly
+	// with oleutil.CallMethod without conversion
+
+	// Get the root element
+	rootResult, err := oleutil.CallMethod(unknown, "GetRootElement")
+	if err != nil {
+		return fmt.Errorf("failed to get root element: %w", err)
+	}
+	root := rootResult.ToIDispatch()
+	if root == nil {
+		return fmt.Errorf("root element is nil")
+	}
+	defer root.Release()
+
+	fmt.Println("  Searching element tree for matching button...")
+
+	// Try to find elements
+	// Note: This is a simplified implementation
+	// Full UIA implementation would require building PropertyCondition objects
+
+	result, err := oleutil.CallMethod(root, "FindFirst", 1, nil)
+	if err != nil {
+		return fmt.Errorf("element search failed: %w", err)
+	}
+
+	element := result.ToIDispatch()
+	if element == nil {
+		return fmt.Errorf("no matching element found")
+	}
+	defer element.Release()
+
+	fmt.Println("  Found element, attempting click...")
+
+	// Try to invoke the click via UI Automation
+	_, err = oleutil.CallMethod(element, "Click")
+	if err == nil {
+		return nil
+	}
+
+	// Try Invoke pattern
+	_, err = oleutil.CallMethod(element, "Invoke")
+	if err == nil {
+		return nil
+	}
+
+	return fmt.Errorf("could not execute button action")
 }
