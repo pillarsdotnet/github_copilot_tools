@@ -3,14 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
-	"strings"
+	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 	"unsafe"
-
-	ole "github.com/go-ole/go-ole"
-	"github.com/go-ole/go-ole/oleutil"
 )
 
 // Windows API constants for keyboard input
@@ -18,7 +17,10 @@ const (
 	INPUT_KEYBOARD = 1
 	KEYEVENTF_KEYUP = 0x0002
 	VK_CONTROL = 0xA2
+	VK_SHIFT = 0xA0
 	VK_L = 0x4C
+	VK_V = 0x56
+	VK_I = 0x49
 	VK_RETURN = 0x0D
 )
 
@@ -38,11 +40,10 @@ type KeyboardInputData struct {
 }
 
 var (
-	user32            = syscall.NewLazyDLL("user32.dll")
-	procSendInput     = user32.NewLazyProc("SendInput")
-	procFindWindowW   = user32.NewLazyProc("FindWindowW")
-	procSetForeground = user32.NewLazyProc("SetForegroundWindow")
-	procGetForeground = user32.NewLazyProc("GetForegroundWindow")
+	user32            = syscall.MustLoadDLL("user32.dll")
+	procSendInput     = user32.MustFindProc("SendInput")
+	procFindWindowW   = user32.MustFindProc("FindWindowW")
+	procSetForeground = user32.MustFindProc("SetForegroundWindow")
 )
 
 func main() {
@@ -58,18 +59,8 @@ func main() {
 	}
 
 	fmt.Println("═══════════════════════════════════════════════════════════════")
-	fmt.Println("  GitHub Copilot Review Request (Windows UI Automation)")
+	fmt.Println("  GitHub Copilot Review Request (DevTools Console)")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
-	fmt.Println()
-
-	// Initialize COM
-	fmt.Println("🔧 Initializing Windows UI Automation...")
-	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
-		fmt.Fprintf(os.Stderr, "✗ Failed to initialize COM: %v\n", err)
-		os.Exit(1)
-	}
-	defer ole.CoUninitialize()
-	fmt.Println("✓ COM initialized")
 	fmt.Println()
 
 	// Step 1: Find Chrome window
@@ -100,14 +91,13 @@ func main() {
 	time.Sleep(5 * time.Second)
 	fmt.Println()
 
-	// Step 4: Find and click the button
-	fmt.Println("🔘 Locating and clicking review button...")
-	fmt.Println("   Button ID: re-request-review-copilot-pull-request-reviewer")
+	// Step 4: Click button via DevTools Console
+	fmt.Println("🔘 Opening DevTools Console and executing JavaScript...")
+	fmt.Println("   Method: Ctrl+Shift+I → Console → Paste → Execute")
 	fmt.Println()
 
-	if err := clickReviewButton(); err != nil {
+	if err := clickReviewButtonViaConsole(chromeHWND); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ Error clicking button: %v\n", err)
-		fmt.Fprintf(os.Stderr, "  Note: Button may not be visible or UI structure may have changed\n")
 		os.Exit(1)
 	}
 
@@ -133,7 +123,6 @@ func main() {
 
 // findChromeWindow finds the Chrome browser window
 func findChromeWindow() uintptr {
-	// Look for Chrome windows by class name
 	classNames := []string{
 		"Chrome_WidgetWin_1",
 		"Chrome_WidgetWin_0",
@@ -151,43 +140,45 @@ func findChromeWindow() uintptr {
 	return 0
 }
 
-// navigateToPR navigates to the PR using keyboard shortcuts and clipboard
+// navigateToPR navigates to the PR using clipboard + Ctrl+V
 func navigateToPR(hwnd uintptr, url string) error {
 	// Set Chrome window to foreground
-	procSetForeground.Call(hwnd)
-	time.Sleep(300 * time.Millisecond)
+	fmt.Println("  Setting Chrome window to foreground...")
+	for i := 0; i < 3; i++ {
+		procSetForeground.Call(hwnd)
+		time.Sleep(300 * time.Millisecond)
+	}
 
 	fmt.Println("  Focusing address bar (Ctrl+L)...")
+	time.Sleep(1 * time.Second)
 
 	// Send Ctrl+L to focus address bar
-	if err := sendKeyPress(VK_CONTROL, true); err != nil {
-		return fmt.Errorf("failed to send Ctrl key down: %w", err)
+	if err := sendKeyCombo(VK_CONTROL, VK_L); err != nil {
+		return fmt.Errorf("failed to send Ctrl+L: %w", err)
 	}
-	if err := sendKeyPress(VK_L, false); err != nil {
-		return fmt.Errorf("failed to send L key: %w", err)
+
+	time.Sleep(1 * time.Second)
+
+	fmt.Println("  Copying URL to clipboard and pasting...")
+
+	// Copy URL to clipboard
+	if err := copyToClipboard(url); err != nil {
+		return fmt.Errorf("failed to copy URL to clipboard: %w", err)
 	}
-	if err := sendKeyUp(VK_CONTROL); err != nil {
-		return fmt.Errorf("failed to send Ctrl key up: %w", err)
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Send Ctrl+V to paste
+	if err := sendKeyCombo(VK_CONTROL, VK_V); err != nil {
+		return fmt.Errorf("failed to send Ctrl+V: %w", err)
 	}
 
 	time.Sleep(500 * time.Millisecond)
 
-	fmt.Println("  Typing URL...")
-
-	// Send the URL one character at a time using keyboard events
-	for _, ch := range url {
-		if err := sendChar(uint16(ch)); err != nil {
-			return fmt.Errorf("failed to send character '%c': %w", ch, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	time.Sleep(300 * time.Millisecond)
-
 	fmt.Println("  Pressing Enter to navigate...")
 
 	// Send Enter to navigate
-	if err := sendKeyPress(VK_RETURN, false); err != nil {
+	if err := sendKeyPress(VK_RETURN); err != nil {
 		return fmt.Errorf("failed to send Enter: %w", err)
 	}
 
@@ -196,9 +187,211 @@ func navigateToPR(hwnd uintptr, url string) error {
 	return nil
 }
 
-// sendKeyPress sends a key down and up
-func sendKeyPress(vkey uint16, isControl bool) error {
-	// Send key down
+// clickReviewButtonViaConsole opens DevTools and executes JavaScript
+func clickReviewButtonViaConsole(hwnd uintptr) error {
+	jsCode := "document.getElementById('re-request-review-copilot-pull-request-reviewer').click()"
+
+	// Set Chrome to foreground
+	procSetForeground.Call(hwnd)
+	time.Sleep(300 * time.Millisecond)
+
+	fmt.Println("  Opening DevTools (Ctrl+Shift+I)...")
+
+	// Send Ctrl+Shift+I to open DevTools
+	if err := sendKeyTriple(VK_CONTROL, VK_SHIFT, VK_I); err != nil {
+		return fmt.Errorf("failed to open DevTools: %w", err)
+	}
+
+	time.Sleep(2 * time.Second) // Wait for DevTools to open
+
+	fmt.Println("  DevTools should now be open with Console tab visible...")
+	fmt.Println("  Copying JavaScript code to clipboard...")
+
+	// Copy JavaScript to clipboard
+	if err := copyToClipboard(jsCode); err != nil {
+		return fmt.Errorf("failed to copy JavaScript to clipboard: %w", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	fmt.Println("  Pasting JavaScript (Ctrl+V)...")
+
+	// First paste attempt
+	if err := sendKeyCombo(VK_CONTROL, VK_V); err != nil {
+		return fmt.Errorf("failed to paste JavaScript: %w", err)
+	}
+
+	time.Sleep(1 * time.Second) // Wait for paste warning to appear
+
+	fmt.Println("  Typing 'allow pasting' and pressing Enter...")
+
+	// Type "allow pasting"
+	for _, ch := range "allow pasting" {
+		if err := typeCharacter(ch); err != nil {
+			return fmt.Errorf("failed to type character: %w", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Press Enter
+	if err := sendKeyPress(VK_RETURN); err != nil {
+		return fmt.Errorf("failed to press Enter: %w", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	fmt.Println("  Pasting JavaScript again (Ctrl+V)...")
+
+	// Second paste attempt
+	if err := sendKeyCombo(VK_CONTROL, VK_V); err != nil {
+		return fmt.Errorf("failed to paste JavaScript again: %w", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	fmt.Println("  Pressing Enter to execute JavaScript...")
+
+	// Press Enter to execute
+	if err := sendKeyPress(VK_RETURN); err != nil {
+		return fmt.Errorf("failed to execute JavaScript: %w", err)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	fmt.Println("  Closing DevTools (Ctrl+Shift+I)...")
+
+	// Close DevTools with Ctrl+Shift+I
+	if err := sendKeyTriple(VK_CONTROL, VK_SHIFT, VK_I); err != nil {
+		return fmt.Errorf("failed to close DevTools: %w", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	return nil
+}
+
+// typeCharacter sends a single character via keyboard
+func typeCharacter(ch rune) error {
+	// For simplicity, use VK codes for common characters
+	// This is a simplified approach - a full implementation would map all characters
+	vkMap := map[rune]uint16{
+		'a': 0x41, 'b': 0x42, 'c': 0x43, 'd': 0x44, 'e': 0x45,
+		'f': 0x46, 'g': 0x47, 'h': 0x48, 'i': 0x49, 'j': 0x4A,
+		'k': 0x4B, 'l': 0x4C, 'm': 0x4D, 'n': 0x4E, 'o': 0x4F,
+		'p': 0x50, 'q': 0x51, 'r': 0x52, 's': 0x53, 't': 0x54,
+		'u': 0x55, 'v': 0x56, 'w': 0x57, 'x': 0x58, 'y': 0x59,
+		'z': 0x5A, ' ': 0x20,
+	}
+
+	vk, ok := vkMap[ch]
+	if !ok {
+		return fmt.Errorf("unsupported character: %c", ch)
+	}
+
+	return sendKeyPress(vk)
+}
+
+// copyToClipboard puts text on the Windows clipboard by writing to a temp file
+func copyToClipboard(text string) error {
+	tmpFile := filepath.Join(os.TempDir(), "copilot_clip.txt")
+
+	if err := ioutil.WriteFile(tmpFile, []byte(text), 0644); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	// Use PowerShell to read file and set clipboard
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf("Get-Content '%s' | Set-Clipboard", tmpFile))
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to set clipboard: %w", err)
+	}
+
+	// Clean up temp file
+	_ = os.Remove(tmpFile)
+
+	return nil
+}
+
+// sendKeyTriple sends three keys together (like Ctrl+Shift+I)
+func sendKeyTriple(vkey1, vkey2, vkey3 uint16) error {
+	if err := sendKeyDown(vkey1); err != nil {
+		return err
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := sendKeyDown(vkey2); err != nil {
+		return err
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := sendKeyDown(vkey3); err != nil {
+		return err
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := sendKeyUp(vkey3); err != nil {
+		return err
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := sendKeyUp(vkey2); err != nil {
+		return err
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := sendKeyUp(vkey1); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// sendKeyCombo sends two keys together (like Ctrl+L)
+func sendKeyCombo(vkey1, vkey2 uint16) error {
+	if err := sendKeyDown(vkey1); err != nil {
+		return err
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := sendKeyDown(vkey2); err != nil {
+		return err
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := sendKeyUp(vkey2); err != nil {
+		return err
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := sendKeyUp(vkey1); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// sendKeyPress sends a single key down and up
+func sendKeyPress(vkey uint16) error {
+	if err := sendKeyDown(vkey); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	return sendKeyUp(vkey)
+}
+
+// sendKeyDown sends a key down event
+func sendKeyDown(vkey uint16) error {
 	input := KeyboardInput{
 		Type: INPUT_KEYBOARD,
 		Ki: KeyboardInputData{
@@ -214,20 +407,7 @@ func sendKeyPress(vkey uint16, isControl bool) error {
 		unsafe.Sizeof(input))
 
 	if ret == 0 {
-		return fmt.Errorf("SendInput failed for key down: %w", err)
-	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	// Send key up
-	input.Ki.Flags = KEYEVENTF_KEYUP
-	ret, _, err = procSendInput.Call(
-		1,
-		uintptr(unsafe.Pointer(&input)),
-		unsafe.Sizeof(input))
-
-	if ret == 0 {
-		return fmt.Errorf("SendInput failed for key up: %w", err)
+		return fmt.Errorf("SendInput failed: %w", err)
 	}
 
 	return nil
@@ -254,120 +434,4 @@ func sendKeyUp(vkey uint16) error {
 	}
 
 	return nil
-}
-
-// sendChar sends a character using keyboard event
-func sendChar(char uint16) error {
-	input := KeyboardInput{
-		Type: INPUT_KEYBOARD,
-		Ki: KeyboardInputData{
-			VKey: 0,
-			Scan: char,
-			Flags: 0x0004, // KEYEVENTF_UNICODE
-		},
-	}
-
-	ret, _, err := procSendInput.Call(
-		1,
-		uintptr(unsafe.Pointer(&input)),
-		unsafe.Sizeof(input))
-
-	if ret == 0 {
-		return fmt.Errorf("SendInput failed: %w", err)
-	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	input.Ki.Flags = KEYEVENTF_KEYUP | 0x0004
-	ret, _, err = procSendInput.Call(
-		1,
-		uintptr(unsafe.Pointer(&input)),
-		unsafe.Sizeof(input))
-
-	if ret == 0 {
-		return fmt.Errorf("SendInput failed for char up: %w", err)
-	}
-
-	return nil
-}
-
-// clickReviewButton finds and clicks the review button using UI Automation
-func clickReviewButton() error {
-	fmt.Println("  Initializing UI Automation...")
-
-	// Create UI Automation object
-	unknown, err := oleutil.CreateObject("UIAutomationCore.CUIAutomation8")
-	if err != nil {
-		return fmt.Errorf("failed to create UIAutomation object: %w", err)
-	}
-	if unknown == nil {
-		return fmt.Errorf("UIAutomation object is nil")
-	}
-	defer unknown.Release()
-
-	// Get root element
-	rootResult, err := oleutil.CallMethod(unknown, "GetRootElement")
-	if err != nil {
-		return fmt.Errorf("failed to get root element: %w", err)
-	}
-	root := rootResult.ToIDispatch()
-	if root == nil {
-		return fmt.Errorf("root element is nil")
-	}
-	defer root.Release()
-
-	fmt.Println("  Searching for button by AutomationId...")
-
-	// Create a PropertyCondition to find button by AutomationId
-	// AutomationId property ID is 30011
-	automationIDPropID := 30011
-	buttonID := "re-request-review-copilot-pull-request-reviewer"
-
-	// Create condition: (AutomationId == "re-request-review-copilot-pull-request-reviewer")
-	conditionResult, err := oleutil.CallMethod(unknown, "CreatePropertyCondition",
-		automationIDPropID, buttonID)
-	if err != nil {
-		return fmt.Errorf("failed to create property condition: %w", err)
-	}
-	condition := conditionResult.ToIDispatch()
-	if condition == nil {
-		return fmt.Errorf("property condition is nil")
-	}
-	defer condition.Release()
-
-	// Find the first element matching the condition (TreeScope_Subtree = 7)
-	findResult, err := oleutil.CallMethod(root, "FindFirst", 7, condition)
-	if err != nil {
-		return fmt.Errorf("failed to find element: %w", err)
-	}
-
-	element := findResult.ToIDispatch()
-	if element == nil {
-		return fmt.Errorf("button element not found - may not be visible or ID mismatch")
-	}
-	defer element.Release()
-
-	fmt.Println("  Found button element, invoking click...")
-
-	// Try to invoke the Invoke pattern (for buttons)
-	invokeResult, err := oleutil.CallMethod(element, "GetCurrentPattern", 5) // 5 = InvokePattern
-	if err == nil && invokeResult != nil {
-		invokePattern := invokeResult.ToIDispatch()
-		if invokePattern != nil {
-			defer invokePattern.Release()
-
-			_, err := oleutil.CallMethod(invokePattern, "Invoke")
-			if err == nil {
-				return nil
-			}
-		}
-	}
-
-	// Fallback: Try Click method directly
-	_, err = oleutil.CallMethod(element, "Click")
-	if err == nil {
-		return nil
-	}
-
-	return fmt.Errorf("could not invoke button - tried both Invoke pattern and Click")
 }

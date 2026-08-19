@@ -137,44 +137,59 @@ echo "Strategy 2: cherry-pick onto a fresh branch"
 CLEAN_BRANCH="${HEAD}-clean"
 
 if git rev-parse --verify "$CLEAN_BRANCH" > /dev/null 2>&1 && [[ $FORCE -ne 1 ]]; then
-  echo "✗ Branch '$CLEAN_BRANCH' already exists locally; pass --force to overwrite. Skipping to diff-apply." >&2
-else
-  git checkout -B "$CLEAN_BRANCH" "origin/$BASE" > /dev/null
+  echo "✗ ERROR: Branch '$CLEAN_BRANCH' already exists locally"
+  echo "  This usually means a prior rebase attempt left state behind."
+  echo "  Options:"
+  echo "    1. git branch -D $CLEAN_BRANCH && git branch -D $HEAD"
+  echo "    2. Pass --force to overwrite (not recommended; review what's there first)"
+  exit 6
+fi
 
-  CHERRY_FAILED=0
-  mapfile -t COMMITS < <(git log "origin/$BASE..origin/$HEAD" --reverse --format=%H)
-  if [[ ${#COMMITS[@]} -eq 0 ]]; then
-    echo "✗ No commits found between origin/$BASE and origin/$HEAD; skipping to diff-apply"
+git checkout -B "$CLEAN_BRANCH" "origin/$BASE" > /dev/null 2>&1 || {
+  echo "✗ Could not create $CLEAN_BRANCH based on origin/$BASE" >&2
+  exit 4
+}
+
+CHERRY_FAILED=0
+mapfile -t COMMITS < <(git log "origin/$BASE..origin/$HEAD" --reverse --format=%H)
+if [[ ${#COMMITS[@]} -eq 0 ]]; then
+  echo "✗ No commits found between origin/$BASE and origin/$HEAD"
+  echo "  This could mean:"
+  echo "    - PR base has already been updated and this PR is already up-to-date"
+  echo "    - PR base branch doesn't exist or is incorrect"
+  exit 3
+fi
+
+echo "  Cherry-picking ${#COMMITS[@]} commit(s)..."
+for COMMIT in "${COMMITS[@]}"; do
+  if ! git cherry-pick --no-commit "$COMMIT" > /dev/null 2>&1; then
     CHERRY_FAILED=1
-  else
-    for COMMIT in "${COMMITS[@]}"; do
-      if ! git cherry-pick --no-commit "$COMMIT" > /dev/null 2>&1; then
-        CHERRY_FAILED=1
-        break
-      fi
-    done
+    FAILED_COMMIT=$(git log -1 --format=%h "$COMMIT")
+    echo "  ✗ Conflict at commit $FAILED_COMMIT"
+    break
   fi
+done
 
-  if [[ $CHERRY_FAILED -eq 1 ]]; then
-    echo "✗ Cherry-pick conflicts; falling back to per-file diff application"
-    # `--abort` only works if the sequencer recognizes a cherry-pick "in
-    # progress", which a conflicting `--no-commit` cherry-pick doesn't
-    # reliably leave behind. `--quit` clears sequencer state unconditionally,
-    # then `reset --hard` discards the conflicted/staged tree (HEAD is still
-    # at origin/$BASE here since nothing in this loop was ever committed).
-    git cherry-pick --quit > /dev/null 2>&1 || true
+if [[ $CHERRY_FAILED -eq 1 ]]; then
+  echo "✗ Cherry-pick failed; falling back to per-file diff application"
+  # Clean up the failed cherry-pick state
+  git cherry-pick --quit > /dev/null 2>&1 || true
+  git reset --hard HEAD > /dev/null 2>&1 || true
+  git checkout "$BASE" > /dev/null 2>&1 || git checkout - > /dev/null 2>&1 || true
+  git branch -D "$CLEAN_BRANCH" > /dev/null 2>&1 || true
+else
+  if ! git commit -m "$TITLE" --quiet 2>/dev/null; then
+    echo "✗ Failed to commit after cherry-pick"
     git reset --hard HEAD > /dev/null 2>&1 || true
-    git checkout "$BASE" > /dev/null 2>&1 || git checkout - > /dev/null 2>&1 || true
     git branch -D "$CLEAN_BRANCH" > /dev/null 2>&1 || true
+    exit 6
+  fi
+  echo "✓ Cherry-picked ${#COMMITS[@]} commit(s) into one commit on $CLEAN_BRANCH"
+  echo "  (commit message is the PR title verbatim-review/amend before pushing)"
+  if push_result "$CLEAN_BRANCH" 0; then
+    exit 1
   else
-    git commit -m "$TITLE" --quiet
-    echo "✓ Cherry-picked ${#COMMITS[@]} commit(s) into one commit on $CLEAN_BRANCH"
-    echo "  (commit message is the PR title verbatim-review/amend before pushing)"
-    if push_result "$CLEAN_BRANCH" 0; then
-      exit 1
-    else
-      exit 5
-    fi
+    exit 5
   fi
 fi
 
@@ -182,22 +197,50 @@ fi
 
 echo ""
 echo "Strategy 3: per-file diff application"
-git checkout "$BASE" > /dev/null 2>&1 || true
+
+if ! git checkout "$BASE" > /dev/null 2>&1; then
+  echo "✗ Could not check out base branch $BASE" >&2
+  exit 4
+fi
 
 APPLY_ARGS=(apply-pr-diffs "origin/$BASE" "origin/$HEAD" "$CLEAN_BRANCH")
 [[ $FORCE -eq 1 ]] && APPLY_ARGS+=(--force)
 
-if "${APPLY_ARGS[@]}"; then
-  git commit -m "$TITLE" --quiet
-  echo "✓ Diff-applied and committed on $CLEAN_BRANCH"
-  echo "  (commit message is the PR title verbatim-review/amend before pushing)"
-  if push_result "$CLEAN_BRANCH" 0; then
-    exit 2
-  else
-    exit 5
-  fi
-else
-  echo ""
-  echo "✗ All strategies failed for $REPO #$PR_NUMBER. Manual intervention needed." >&2
+APPLY_OUTPUT=$(mktemp)
+if ! "${APPLY_ARGS[@]}" > "$APPLY_OUTPUT" 2>&1; then
+  APPLY_EXIT=$?
+  echo "✗ apply-pr-diffs failed with exit code $APPLY_EXIT" >&2
+  echo "  Diagnostic output:" >&2
+  sed 's/^/    /' "$APPLY_OUTPUT" >&2
+  rm -f "$APPLY_OUTPUT"
   exit 3
+fi
+rm -f "$APPLY_OUTPUT"
+
+# Verify the branch was created and is in a clean state
+if ! git rev-parse --verify "$CLEAN_BRANCH" > /dev/null 2>&1; then
+  echo "✗ apply-pr-diffs completed but $CLEAN_BRANCH was not created" >&2
+  exit 6
+fi
+
+if ! git diff --quiet "$CLEAN_BRANCH"; then
+  echo "✗ apply-pr-diffs completed but $CLEAN_BRANCH has uncommitted changes" >&2
+  echo "  This indicates apply-pr-diffs left the working tree dirty." >&2
+  git diff --name-only "$CLEAN_BRANCH" | sed 's/^/    /' >&2
+  exit 6
+fi
+
+if ! git commit -m "$TITLE" --quiet 2>/dev/null; then
+  echo "✗ Failed to commit after diff-apply"
+  git reset --hard HEAD > /dev/null 2>&1 || true
+  git branch -D "$CLEAN_BRANCH" > /dev/null 2>&1 || true
+  exit 6
+fi
+
+echo "✓ Diff-applied and committed on $CLEAN_BRANCH"
+echo "  (commit message is the PR title verbatim-review/amend before pushing)"
+if push_result "$CLEAN_BRANCH" 0; then
+  exit 2
+else
+  exit 5
 fi

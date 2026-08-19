@@ -668,9 +668,16 @@ apply-pr-diffs origin/main origin/feature/x feature/x-clean --force
 
 Orchestrates the full STEP 2 rebase decision: tries a direct rebase first,
 falls back to a squashed cherry-pick, then falls back to `apply-pr-diffs`
-as a last resort. **Does not push by default**—force-pushing a shared
-branch is hard to reverse, so pass `--push` explicitly, or run the printed
-command yourself after reviewing the result.
+as a last resort. **Designed to fail loudly if anything goes wrong**, so you know
+immediately when manual intervention is needed rather than discovering issues
+much later. **Does not push by default**—force-pushing a shared branch is hard
+to reverse, so pass `--push` explicitly, or run the printed command yourself
+after reviewing the result.
+
+**IMPORTANT:** Never force-push if the script exits with code 3 or 6.
+Instead, inspect the diagnostic output and decide whether to (a) rebase manually,
+(b) delete the local branches and try again, or (c) mark the PR as requiring
+special handling.
 
 ```bash
 auto-rebase-pr <REPO> <PR_NUMBER> [--push] [--force]
@@ -683,12 +690,22 @@ auto-rebase-pr owner/repo 116 --push   # prepare and force-push the result
 ```
 
 **Exit codes:**
-- `0` = Succeeded via direct rebase
-- `1` = Succeeded via cherry-pick
+- `0` = Succeeded via direct rebase (clean)
+- `1` = Succeeded via cherry-pick (squashed into one commit)
 - `2` = Succeeded via per-file diff application (`apply-pr-diffs`)
-- `3` = All strategies failed; manual intervention needed
-- `4` = Invalid arguments or setup error
-- `5` = Local result prepared successfully, but `--push` failed (e.g. remote moved)
+- `3` = All strategies failed; do NOT push, inspect diagnostic output
+- `4` = Invalid arguments or setup error (fix parameters and retry)
+- `5` = Local result prepared successfully, but `--push` failed; retry with `--push`
+- `6` = Strategy partially succeeded but left working tree dirty; manual cleanup needed
+
+**Handling failure cases:**
+- Exit code `3` (all strategies failed): One or more commits have conflicts that
+  cannot be resolved automatically. You will need to rebase manually to understand
+  the conflicts, or mark the PR as requiring special handling.
+- Exit code `6` (dirty working tree): A rebase strategy partially succeeded but
+  left uncommitted changes. This usually indicates a pre-commit hook or other
+  tool modified files unexpectedly. Run `git status` to see what happened, then
+  either manually fix and commit, or delete branches and start over.
 
 **Note:** When strategy 2 or 3 succeeds, the commit message is the PR title
 verbatim—review/amend it to conform to conventional-commits before pushing.
