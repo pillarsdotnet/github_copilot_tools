@@ -1,0 +1,75 @@
+#!/bin/bash
+#
+# Forcibly remove GitHub Copilot from PR reviewers, then re-add it.
+#
+# This script works around cases where the standard "request review" button
+# in the GitHub UI fails silently or doesn't trigger a new review. It uses:
+#   1. gh pr edit --remove-reviewer to forcibly remove Copilot
+#   2. gh pr edit --add-reviewer to re-add Copilot
+#
+# This forces GitHub to send a fresh review request and often resolves
+# hung/stalled review states.
+#
+# Exit codes:
+#   0 = Success (Copilot removed and re-added)
+#   1 = Error (missing repo, invalid PR number, gh command failed, etc.)
+#
+# Usage: reset-copilot-reviewer <REPO> <PR_NUMBER>
+# Example: reset-copilot-reviewer owner/repo 116
+#
+
+set -e
+
+REPO="$1"
+PR_NUM="$2"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUM" ]]; then
+  echo "Usage: reset-copilot-reviewer <OWNER/REPO> <PR_NUMBER>" >&2
+  echo "Example: reset-copilot-reviewer owner/repo 116" >&2
+  exit 1
+fi
+
+# Validate REPO format
+if [[ "$REPO" != *"/"* ]]; then
+  echo "✗ Error: REPO must be in format OWNER/REPO (e.g., owner/repo)" >&2
+  exit 1
+fi
+
+# Validate PR_NUM is numeric
+if ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+  echo "✗ Error: PR_NUMBER must be a number (e.g., 116)" >&2
+  exit 1
+fi
+
+COPILOT_USER="copilot-pull-request-reviewer"
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  Reset Copilot Reviewer on PR #$PR_NUM"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+
+# Step 1: Remove Copilot from reviewers
+echo "Step 1: Removing $COPILOT_USER from reviewers..."
+if gh pr edit "$PR_NUM" --repo "$REPO" --remove-reviewer "$COPILOT_USER" 2>/dev/null; then
+  echo "✓ Removed $COPILOT_USER"
+else
+  echo "  (Note: $COPILOT_USER may not have been a reviewer, continuing...)"
+fi
+
+echo ""
+
+# Step 2: Re-add Copilot to reviewers
+echo "Step 2: Re-adding $COPILOT_USER as reviewer..."
+if gh pr edit "$PR_NUM" --repo "$REPO" --add-reviewer "$COPILOT_USER"; then
+  echo "✓ Re-added $COPILOT_USER"
+else
+  echo "✗ Error: Failed to add $COPILOT_USER as reviewer" >&2
+  exit 1
+fi
+
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "✓ Success! Copilot review request has been reset."
+echo "  GitHub should now send a fresh review request."
+echo "════════════════════════════════════════════════════════════════"
+echo ""

@@ -695,6 +695,58 @@ verbatim—review/amend it to conform to conventional-commits before pushing.
 
 ---
 
+### 18. `reset-copilot-reviewer` - Force reset Copilot reviewer
+
+Forcibly remove GitHub Copilot from the PR's reviewers, then immediately re-add it.
+This works around issues where the standard "request review" button in the GitHub UI
+fails silently or doesn't trigger a new review. By removing and re-adding Copilot,
+you force GitHub to send a fresh review request.
+
+```bash
+reset-copilot-reviewer <REPO> <PR_NUMBER>
+```
+
+**Examples:**
+```bash
+reset-copilot-reviewer owner/repo 116
+reset-copilot-reviewer owner/other-repo 42
+```
+
+**Output:**
+```
+════════════════════════════════════════════════════════════════
+  Reset Copilot Reviewer on PR #116
+════════════════════════════════════════════════════════════════
+
+Step 1: Removing copilot-pull-request-reviewer from reviewers...
+✓ Removed copilot-pull-request-reviewer
+
+Step 2: Re-adding copilot-pull-request-reviewer as reviewer...
+✓ Re-added copilot-pull-request-reviewer
+
+════════════════════════════════════════════════════════════════
+✓ Success! Copilot review request has been reset.
+  GitHub should now send a fresh review request.
+════════════════════════════════════════════════════════════════
+```
+
+**Exit codes:**
+- `0` = Success (Copilot removed and re-added)
+- `1` = Error (invalid repo format, PR not found, gh command failed, etc.)
+
+**When to use:**
+- Copilot review request button in GitHub UI doesn't respond
+- Previous review request appears to have been lost or ignored
+- Need to force a fresh code review without changing the PR
+- Part of the PR review workflow when step 11 (request review) needs a workaround
+
+**Troubleshooting:**
+- If Copilot wasn't previously a reviewer, the remove step will warn but continue
+- Ensure `gh` is authenticated: `gh auth login`
+- Verify the PR number is correct: `gh pr view <REPO> <PR_NUMBER>`
+
+---
+
 ## Workflow Examples
 
 ### Example 1: Check if review refresh is needed
