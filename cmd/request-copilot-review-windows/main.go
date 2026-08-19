@@ -12,11 +12,13 @@ import (
 
 func main() {
 	prNumber := flag.String("pr", "", "GitHub PR number (e.g., 116)")
+	owner := flag.String("owner", "", "GitHub repository owner (e.g., owner)")
+	repo := flag.String("repo", "", "GitHub repository name (e.g., repo)")
 	flag.Parse()
 
-	if *prNumber == "" {
-		fmt.Fprintf(os.Stderr, "Usage: request-copilot-review-windows -pr <PR_NUMBER>\n")
-		fmt.Fprintf(os.Stderr, "Example: request-copilot-review-windows -pr 116\n")
+	if *prNumber == "" || *owner == "" || *repo == "" {
+		fmt.Fprintf(os.Stderr, "Usage: request-copilot-review-windows -pr <PR_NUMBER> -owner <OWNER> -repo <REPO>\n")
+		fmt.Fprintf(os.Stderr, "Example: request-copilot-review-windows -pr 116 -owner owner -repo repo\n")
 		os.Exit(1)
 	}
 
@@ -36,8 +38,9 @@ func main() {
 	fmt.Println()
 
 	// Step 1: Navigate to PR
-	prURL := fmt.Sprintf("https://github.com/owner/repo/pull/%s", *prNumber)
+	prURL := fmt.Sprintf("https://github.com/%s/%s/pull/%s", *owner, *repo, *prNumber)
 	fmt.Printf("📄 Navigating to PR #%s\n", *prNumber)
+	fmt.Printf("   Repository: %s/%s\n", *owner, *repo)
 	fmt.Printf("   URL: %s\n", prURL)
 	fmt.Println()
 
@@ -74,7 +77,7 @@ func main() {
 	fmt.Println("  ✓ Copilot review request submitted successfully")
 	fmt.Println("════════════════════════════════════════════════════════════════")
 	fmt.Println()
-	fmt.Printf("GitHub will queue a new Copilot review for PR #%s\n", *prNumber)
+	fmt.Printf("GitHub will queue a new Copilot review for %s/%s#%s\n", *owner, *repo, *prNumber)
 	fmt.Println()
 	fmt.Println("Expected timeline:")
 	fmt.Println("  • 1-2 minutes: Copilot analyzes the PR")
@@ -106,9 +109,6 @@ func clickButtonByID(buttonID string) error {
 		return fmt.Errorf("UIAutomation object is nil")
 	}
 	defer unknown.Release()
-
-	// The oleutil.CreateObject returns IUnknown, which we can use directly
-	// with oleutil.CallMethod without conversion
 
 	// Get the root element
 	rootResult, err := oleutil.CallMethod(unknown, "GetRootElement")

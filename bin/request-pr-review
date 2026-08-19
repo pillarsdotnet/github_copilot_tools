@@ -24,10 +24,19 @@ REPO="$1"
 PR_NUM="$2"
 
 if [[ -z "$REPO" ]] || [[ -z "$PR_NUM" ]]; then
-  echo "Usage: request-pr-review <REPO> <PR_NUMBER>" >&2
+  echo "Usage: request-pr-review <OWNER/REPO> <PR_NUMBER>" >&2
   echo "Example: request-pr-review owner/repo 116" >&2
   exit 1
 fi
+
+# Parse repo owner and name from OWNER/REPO format
+if [[ "$REPO" != *"/"* ]]; then
+  echo "✗ Error: REPO must be in format OWNER/REPO (e.g., owner/repo)" >&2
+  exit 1
+fi
+
+REPO_OWNER="${REPO%/*}"
+REPO_NAME="${REPO#*/}"
 
 echo "════════════════════════════════════════════════════════════════"
 echo "  STEP 12: Request New Copilot Review"
@@ -70,11 +79,11 @@ if [ ! -f "$WINDOWS_TOOL" ]; then
   exit 1
 fi
 
-echo "Executing: $WINDOWS_TOOL -pr $PR_NUM"
+echo "Executing: $WINDOWS_TOOL -pr $PR_NUM -owner $REPO_OWNER -repo $REPO_NAME"
 echo ""
 
 # Run the Windows tool
-"$WINDOWS_TOOL" -pr "$PR_NUM"
+"$WINDOWS_TOOL" -pr "$PR_NUM" -owner "$REPO_OWNER" -repo "$REPO_NAME"
 TOOL_EXIT=$?
 
 echo ""
@@ -84,7 +93,7 @@ if [ $TOOL_EXIT -eq 0 ]; then
   echo "  ✓ Review Request Complete"
   echo "════════════════════════════════════════════════════════════════"
   echo ""
-  echo "GitHub has queued a new Copilot review for PR #$PR_NUM"
+  echo "GitHub has queued a new Copilot review for $REPO#$PR_NUM"
   echo ""
   echo "Expected next steps:"
   echo "  1. Wait 1-2 minutes for Copilot to analyze the PR"
