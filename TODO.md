@@ -418,10 +418,20 @@ This document identifies workflow steps in the stacked PR review process that wo
 
 ## Implementation Roadmap
 
-### Phase 1 (Highest ROI - 2-3 days)
-1. `analyze-pr-stack` (enables all other tools)
-2. `categorize-pr-reviews` (high reuse, enables remediation guide)
-3. `stack-cycle-next-pr` (automates entire cycle-back logic)
+### Phase 1 (Highest ROI - 2-3 days) — ✅ DONE (2026-08-19)
+1. ✅ `analyze-pr-stack` (enables all other tools) — handles GitHub's
+   post-merge base-retargeting via full graph traversal, not just a linear
+   walk; validated against the live owner/repo stack.
+2. ✅ `categorize-pr-reviews` (high reuse, enables remediation guide) —
+   parses suppressed comments straight out of Copilot review bodies and
+   merges them with open review threads; validated against real suppressed
+   comments on PRs #108, #109, #116, #117.
+3. ✅ `stack-cycle-next-pr` (automates entire cycle-back logic) — composes
+   `latest-copilot-review-id`, `is-sentinel-review`, and
+   `has-post-sentinel-commits`; accepts PR numbers as args or piped from
+   `analyze-pr-stack --json`.
+
+See `README.md` for full usage of each.
 
 ### Phase 2 (Core Rebase Automation - 3-4 days)
 4. `auto-rebase-pr` (highest impact, most complex)
@@ -459,7 +469,7 @@ At GitHub Copilot Pro rates (~3M tokens/$20 USD), this represents **$5-10 USD sa
 
 ## Success Criteria
 
-- [ ] All Phase 1 tools deployed and tested on 5+ real PRs
+- [x] All Phase 1 tools deployed and tested on 5+ real PRs (owner/repo #108, #109, #110, #111, #115, #116, #117, #120)
 - [ ] Entire stack workflow (PR #115-#120 cycle) can run with AI only for "remediation logic" steps
 - [ ] AI tokens per-PR drop from current ~2000-3000 to target ~500-1000
 - [ ] Zero manual "decision making" for rebase, review collection, or cycle-back steps

@@ -1,0 +1,155 @@
+#!/bin/bash
+#
+# Categorize all review concerns on a PR: suppressed Copilot comments (from
+# review bodies) and open review threads (inline comments), each tagged with
+# a best-guess concern category by keyword pattern matching.
+#
+# Suppressed comments are CRITICAL: Copilot hides some comments by default,
+# but they still represent real concerns that must be remediated. This script
+# surfaces them so they can't be silently skipped.
+#
+# Usage: categorize-pr-reviews <REPO> <PR_NUMBER> [--json]
+# Example: categorize-pr-reviews owner/repo 117
+#
+# Output (--json):
+#   {
+#     "suppressed": [{"file": "X.ps1", "line": 42, "category": "bug", "text": "..."}],
+#     "non_suppressed": [{"file": "Y.ps1", "line": 15, "category": "style", "text": "..."}],
+#     "summary": {"total": 12, "suppressed": 4, "non_suppressed": 8, "by_category": {...}}
+#   }
+#
+# Categories (checked in this priority order, first match wins):
+#   bug, style, documentation, performance, scope, testing, uncategorized
+#
+# Exit codes:
+#   0 = Success (even if no concerns found)
+#   1 = Invalid arguments
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+OUTPUT_FORMAT="text"
+
+if [[ "$3" == "--json" ]]; then
+  OUTPUT_FORMAT="json"
+fi
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: categorize-pr-reviews <REPO> <PR_NUMBER> [--json]" >&2
+  echo "Example: categorize-pr-reviews owner/repo 117" >&2
+  exit 1
+fi
+
+# --- Extract suppressed comments from each review body ---------------------
+#
+# Copilot review bodies embed suppressed comments as:
+#   <details>
+#   <summary>Suppressed comments (N)</summary>
+#
+#   **path/to/file:LINE**
+#   * comment text
+#   ```
+#   optional context snippet, ignored
+#   ```
+#   </details>
+
+SUPPRESSED_JSON=$(
+  copilot-reviews "$REPO" "$PR_NUMBER" --json 2>/dev/null | jq -r '.body' | awk '
+    function esc(s) {
+      gsub(/\\/, "\\\\", s)
+      gsub(/"/, "\\\"", s)
+      return s
+    }
+    function flush() {
+      if (path != "") {
+        print "{\"file\":\"" esc(path) "\",\"line\":" lineno ",\"text\":\"" esc(text) "\"}"
+      }
+      path = ""; lineno = ""; text = ""
+    }
+    /<summary>Suppressed comments/ { insuppressed = 1; next }
+    /<\/details>/ { if (insuppressed) { flush(); insuppressed = 0 }; next }
+    !insuppressed { next }
+    /^\*\*.+:[0-9]+\*\*$/ {
+      flush()
+      hdr = $0
+      gsub(/^\*\*/, "", hdr); gsub(/\*\*$/, "", hdr)
+      n = match(hdr, /:[0-9]+$/)
+      lineno = substr(hdr, n + 1)
+      path = substr(hdr, 1, n - 1)
+      infence = 0
+      next
+    }
+    /^```/ { infence = !infence; next }
+    infence { next }
+    /^\* / && text == "" { t = $0; sub(/^\* /, "", t); text = t; next }
+    { next }
+    END { flush() }
+  ' | jq -s '.'
+)
+
+# --- Fetch non-suppressed (open) review thread comments ---------------------
+
+NON_SUPPRESSED_JSON=$(
+  open-review-threads "$REPO" "$PR_NUMBER" --json 2>/dev/null | jq -s '[.[] | {file: .path, line: .line, text: .body, thread_id: .id}]'
+)
+
+# --- Categorize and combine --------------------------------------------------
+
+RESULT=$(jq -n \
+  --argjson suppressed "$SUPPRESSED_JSON" \
+  --argjson non_suppressed "$NON_SUPPRESSED_JSON" \
+  '
+  def categorize:
+    if (test("\\b(null|error|exception|fail|undefined|incorrect|inconsistent|wrong|bug|dead code)\\b"; "i")) then "bug"
+    elif (test("\\b(consider|suggest|could|style|styling|stylistic)\\b"; "i")) then "style"
+    elif (test("\\b(typo|comment|docstring|readme|documentation)\\b"; "i")) then "documentation"
+    elif (test("\\b(performance|optimize|optimization|complexity|cache|caching)\\b"; "i")) then "performance"
+    elif (test("\\b(scope|unexpected)\\b|pr description"; "i")) then "scope"
+    elif (test("\\b(test|tests|testing|verify|coverage)\\b"; "i")) then "testing"
+    else "uncategorized"
+    end;
+
+  ($suppressed | map(. + {category: (.text | categorize)})) as $s |
+  ($non_suppressed | map(. + {category: (.text | categorize)})) as $ns |
+  ($s + $ns) as $all |
+  {
+    suppressed: $s,
+    non_suppressed: $ns,
+    summary: {
+      total: ($all | length),
+      suppressed: ($s | length),
+      non_suppressed: ($ns | length),
+      by_category: ($all | group_by(.category) | map({key: .[0].category, value: length}) | from_entries)
+    }
+  }
+  '
+)
+
+if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+  echo "$RESULT"
+else
+  TOTAL=$(echo "$RESULT" | jq -r '.summary.total')
+  SUPP_COUNT=$(echo "$RESULT" | jq -r '.summary.suppressed')
+  NS_COUNT=$(echo "$RESULT" | jq -r '.summary.non_suppressed')
+
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  Review concerns for $REPO #$PR_NUMBER"
+  echo "════════════════════════════════════════════════════════════════"
+  echo "Total: $TOTAL  (suppressed: $SUPP_COUNT, open threads: $NS_COUNT)"
+  echo ""
+
+  if [[ "$SUPP_COUNT" -gt 0 ]]; then
+    echo "⚠ SUPPRESSED (must remediate or justify) ────────────────────────"
+    echo "$RESULT" | jq -r '.suppressed[] | "  [\(.category)] \(.file):\(.line)\n    \(.text)\n"'
+  fi
+
+  if [[ "$NS_COUNT" -gt 0 ]]; then
+    echo "Open review threads ──────────────────────────────────────────────"
+    echo "$RESULT" | jq -r '.non_suppressed[] | "  [\(.category)] \(.file):\(.line)\n    \(.text)\n"'
+  fi
+
+  echo "By category:"
+  echo "$RESULT" | jq -r '.summary.by_category | to_entries[] | "  \(.key): \(.value)"'
+fi

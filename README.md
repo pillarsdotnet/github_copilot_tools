@@ -10,6 +10,8 @@ These tools automate common workflows for handling GitHub Copilot code reviews, 
 - Detecting sentinel reviews (no new comments)
 - Checking for post-review code changes
 - Fetching latest CI/workflow results
+- Discovering and reasoning about stacked-PR chains
+- Categorizing review concerns (including suppressed comments) for faster triage
 
 All scripts use the GitHub CLI (`gh`) and GraphQL API for reliable, efficient PR management.
 
@@ -497,6 +499,142 @@ if refresh-needed "$REPO" "$PR" 0; then
   echo "No files changed but all reviews are resolved"
 fi
 ```
+
+---
+
+### 13. `analyze-pr-stack` - Discover the full stacked-PR chain
+
+Given any PR number in a stack, walks down through base branches to find the
+root (base = default branch), then walks up through head branches to find
+every PR chained on top of it. Handles GitHub's automatic base-retargeting
+after a PR merges (which can otherwise obscure the chain), and reports which
+PRs are still open vs. already closed/merged.
+
+```bash
+analyze-pr-stack <REPO> <PR_NUMBER> [--json]
+```
+
+**Examples:**
+```bash
+analyze-pr-stack owner/repo 110
+analyze-pr-stack owner/repo 110 --json
+```
+
+**Output (text):** Indented tree from the default branch to the top PR,
+marking closed/merged PRs as `(state, skip)`.
+
+**Output (--json):**
+```json
+{
+  "stack": [115, 120],
+  "order": "bottom-to-top (root -> leaves)",
+  "root_branch": "main",
+  "leaves": [115, 120],
+  "closed": [108, 109, 110, 111, 116, 117, 112]
+}
+```
+
+- `stack` - currently open PRs, in bottom-to-top order (the ones that still need processing)
+- `closed` - PRs found while tracing the chain that are already closed or merged
+
+**Exit codes:**
+- `0` = Stack resolved successfully
+- `1` = Invalid arguments
+- `2` = Starting PR not found, or repo/default branch could not be determined
+
+**Usage in scripts:**
+```bash
+# Feed the live open stack straight into stack-cycle-next-pr
+analyze-pr-stack owner/repo 110 --json | jq -r '.stack[]' | stack-cycle-next-pr owner/repo --json
+```
+
+---
+
+### 14. `categorize-pr-reviews` - Categorize suppressed and open review concerns
+
+Combines suppressed comments (parsed out of Copilot review bodies) with open
+review threads, and tags each with a best-guess concern category (bug,
+style, documentation, performance, scope, testing) by keyword matching.
+Surfaces suppressed comments prominently since Copilot hides them by default
+but they still represent real concerns that must be remediated.
+
+```bash
+categorize-pr-reviews <REPO> <PR_NUMBER> [--json]
+```
+
+**Examples:**
+```bash
+categorize-pr-reviews owner/repo 117
+categorize-pr-reviews owner/repo 117 --json
+```
+
+**Output (--json):**
+```json
+{
+  "suppressed": [
+    {"file": "README.md", "line": 61, "text": "...", "category": "bug"}
+  ],
+  "non_suppressed": [
+    {"file": "Y.ps1", "line": 15, "text": "...", "category": "style", "thread_id": "PRRT_..."}
+  ],
+  "summary": {
+    "total": 4,
+    "suppressed": 4,
+    "non_suppressed": 0,
+    "by_category": {"bug": 2, "style": 2}
+  }
+}
+```
+
+**Exit codes:**
+- `0` = Success (even if no concerns found)
+- `1` = Invalid arguments
+
+**Note:** Categories are heuristic keyword-match hints meant to speed up
+triage, not a definitive classification—always read `text` before deciding
+how to remediate.
+
+---
+
+### 15. `stack-cycle-next-pr` - Determine which PRs in a stack still need work
+
+Given an ordered PR stack, checks each PR's latest Copilot review with
+`is-sentinel-review` and `has-post-sentinel-commits` to decide whether it's
+already stable (skip) or needs another pass (process). Automates the manual
+"cycle back through the stack" bookkeeping.
+
+```bash
+stack-cycle-next-pr <REPO> <PR_NUMBER...> [--json]
+```
+
+PR numbers may also be piped on stdin, one per line—handy for chaining
+directly off `analyze-pr-stack`:
+
+```bash
+analyze-pr-stack owner/repo 110 --json | jq -r '.stack[]' | stack-cycle-next-pr owner/repo --json
+```
+
+**Examples:**
+```bash
+stack-cycle-next-pr owner/repo 115 116 117 108 109 110 111 120
+stack-cycle-next-pr owner/repo 115 116 117 108 109 110 111 120 --json
+```
+
+**Output (--json):**
+```json
+{
+  "next_pr": 110,
+  "skip": [116, 117, 108, 109],
+  "process": [110, 111, 120],
+  "all_stable": false,
+  "progress": "4 of 8 PRs stable"
+}
+```
+
+**Exit codes:**
+- `0` = More PRs to process
+- `1` = All PRs stable (workflow complete)
+- `2` = Invalid arguments
 
 ---
 

@@ -1,0 +1,132 @@
+#!/bin/bash
+#
+# Given an ordered PR stack, determine which PRs are already stable (sentinel
+# review, no commits since) and which still need processing. Automates the
+# "cycle back through the stack" decision so the AI doesn't have to manually
+# check each PR's review state every pass.
+#
+# Usage: stack-cycle-next-pr <REPO> <PR_NUMBER...> [--json]
+# Example: stack-cycle-next-pr owner/repo 115 116 117 108 109 110 111 120
+#
+# PR numbers may also be piped on stdin (one per line), e.g.:
+#   analyze-pr-stack owner/repo 110 --json | jq -r '.stack[]' | stack-cycle-next-pr owner/repo --json
+#
+# A PR is SKIP if it has a sentinel review (Copilot found no new comments)
+# AND no commits since that review changed any PR file. Otherwise PROCESS.
+#
+# Output (--json):
+#   {
+#     "next_pr": 110,
+#     "skip": [116, 117, 108, 109],
+#     "process": [110, 111, 112, 115, 120],
+#     "all_stable": false,
+#     "progress": "4 of 9 PRs stable"
+#   }
+#
+# Exit codes:
+#   0 = More PRs to process
+#   1 = All PRs stable (workflow complete)
+#   2 = Invalid arguments
+#
+
+set -e
+
+REPO="$1"
+shift || true
+
+OUTPUT_FORMAT="text"
+PR_NUMBERS=()
+for ARG in "$@"; do
+  if [[ "$ARG" == "--json" ]]; then
+    OUTPUT_FORMAT="json"
+  else
+    PR_NUMBERS+=("$ARG")
+  fi
+done
+
+# Fall back to stdin (one PR number per line) if none were given as args.
+if [[ ${#PR_NUMBERS[@]} -eq 0 ]] && [[ ! -t 0 ]]; then
+  while read -r LINE; do
+    [[ -n "$LINE" ]] && PR_NUMBERS+=("$LINE")
+  done
+fi
+
+if [[ -z "$REPO" ]] || [[ ${#PR_NUMBERS[@]} -eq 0 ]]; then
+  echo "Usage: stack-cycle-next-pr <REPO> <PR_NUMBER...> [--json]" >&2
+  echo "Example: stack-cycle-next-pr owner/repo 115 116 117 108 109 110 111 120" >&2
+  exit 2
+fi
+
+SKIP=()
+PROCESS=()
+
+for PR in "${PR_NUMBERS[@]}"; do
+  REVIEW_ID=$(latest-copilot-review-id "$REPO" "$PR" 2>/dev/null || true)
+
+  if [[ -z "$REVIEW_ID" ]]; then
+    # No Copilot review yet at all: needs processing.
+    PROCESS+=("$PR")
+    continue
+  fi
+
+  if is-sentinel-review "$REPO" "$PR" "$REVIEW_ID" 2>/dev/null; then
+    if has-post-sentinel-commits "$REPO" "$PR" 2>/dev/null; then
+      # Sentinel review, but new commits landed since: stale, needs processing.
+      PROCESS+=("$PR")
+    else
+      # Sentinel review, no new commits: stable, skip.
+      SKIP+=("$PR")
+    fi
+  else
+    # Outstanding comments remain: needs processing.
+    PROCESS+=("$PR")
+  fi
+done
+
+TOTAL=${#PR_NUMBERS[@]}
+SKIP_COUNT=${#SKIP[@]}
+NEXT_PR="${PROCESS[0]:-}"
+
+if [[ ${#PROCESS[@]} -eq 0 ]]; then
+  ALL_STABLE="true"
+else
+  ALL_STABLE="false"
+fi
+
+if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+  SKIP_JSON=$(printf '%s\n' "${SKIP[@]:-}" | jq -R 'select(length > 0) | tonumber' | jq -s '.')
+  PROCESS_JSON=$(printf '%s\n' "${PROCESS[@]:-}" | jq -R 'select(length > 0) | tonumber' | jq -s '.')
+  NEXT_JSON="null"
+  [[ -n "$NEXT_PR" ]] && NEXT_JSON="$NEXT_PR"
+
+  jq -n \
+    --argjson next_pr "$NEXT_JSON" \
+    --argjson skip "$SKIP_JSON" \
+    --argjson process "$PROCESS_JSON" \
+    --argjson all_stable "$ALL_STABLE" \
+    --arg progress "$SKIP_COUNT of $TOTAL PRs stable" \
+    '{next_pr: $next_pr, skip: $skip, process: $process, all_stable: $all_stable, progress: $progress}'
+else
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  Stack cycle status for $REPO"
+  echo "════════════════════════════════════════════════════════════════"
+  echo "Progress: $SKIP_COUNT of $TOTAL PRs stable"
+  echo ""
+  if [[ ${#SKIP[@]} -gt 0 ]]; then
+    echo "SKIP (stable):    ${SKIP[*]}"
+  fi
+  if [[ ${#PROCESS[@]} -gt 0 ]]; then
+    echo "PROCESS (needed): ${PROCESS[*]}"
+    echo ""
+    echo "Next PR to process: $NEXT_PR"
+  else
+    echo ""
+    echo "✓ All PRs stable. Workflow complete."
+  fi
+fi
+
+if [[ "$ALL_STABLE" == "true" ]]; then
+  exit 1
+else
+  exit 0
+fi

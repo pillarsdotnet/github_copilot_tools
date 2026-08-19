@@ -1,0 +1,157 @@
+#!/bin/bash
+#
+# Discover the full stacked-PR chain that a given PR belongs to.
+#
+# Given any PR number in a stack, walks DOWN through base branches to find
+# the root (the PR whose base is the repo's default branch), then walks UP
+# through head branches to find every PR chained on top of it. Closed/merged
+# PRs are used as connectors (a later PR may be based on a now-merged PR's
+# branch) but are excluded from the "stack" (open, needs-processing) list.
+#
+# Usage: analyze-pr-stack <REPO> <PR_NUMBER> [--json]
+# Example: analyze-pr-stack owner/repo 110
+#
+# Output (text): an indented tree from the default branch to the top PR.
+# Output (--json):
+#   {
+#     "stack": [115, 116, 117, 108, 109, 110, 111, 120],
+#     "order": "bottom-to-top (root -> leaves)",
+#     "root_branch": "main",
+#     "leaf": 120,
+#     "closed": [112]
+#   }
+#
+# Exit codes:
+#   0 = Stack resolved successfully
+#   1 = Invalid arguments
+#   2 = Starting PR not found
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+OUTPUT_FORMAT="text"
+
+if [[ "$3" == "--json" ]]; then
+  OUTPUT_FORMAT="json"
+fi
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: analyze-pr-stack <REPO> <PR_NUMBER> [--json]" >&2
+  echo "Example: analyze-pr-stack owner/repo 110" >&2
+  exit 1
+fi
+
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 1
+fi
+
+DEFAULT_BRANCH=$(gh api "repos/$REPO" --jq '.default_branch' 2>/dev/null || true)
+if [[ -z "$DEFAULT_BRANCH" ]]; then
+  echo "Error: Could not determine default branch for $REPO" >&2
+  exit 2
+fi
+
+# One list call for every PR (any state) backs both the down-walk and the
+# up-walk, so the whole chain resolves without one API call per hop.
+ALL_PRS=$(gh pr list --repo "$REPO" --state all --json number,baseRefName,headRefName,state,title -L 500 2>/dev/null)
+if [[ -z "$ALL_PRS" ]] || [[ "$ALL_PRS" == "[]" ]]; then
+  echo "Error: Could not list PRs for $REPO" >&2
+  exit 2
+fi
+
+START_PR=$(echo "$ALL_PRS" | jq -c --argjson n "$PR_NUMBER" '.[] | select(.number == $n)')
+if [[ -z "$START_PR" ]]; then
+  # Not in the (possibly truncated) list; fetch it directly.
+  START_PR=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json number,baseRefName,headRefName,state,title 2>/dev/null || true)
+fi
+if [[ -z "$START_PR" ]]; then
+  echo "Error: PR #$PR_NUMBER not found on $REPO" >&2
+  exit 2
+fi
+
+pr_by_head() {
+  # $1 = branch name; find the PR whose headRefName == branch, preferring OPEN
+  echo "$ALL_PRS" | jq -c --arg b "$1" \
+    '[.[] | select(.headRefName == $b)] | (map(select(.state == "OPEN")) + .) | .[0] // empty'
+}
+
+# Walk DOWN to the root (base == default branch).
+CURRENT="$START_PR"
+declare -A SEEN_DOWN
+while [[ "$(echo "$CURRENT" | jq -r '.baseRefName')" != "$DEFAULT_BRANCH" ]]; do
+  BASE_BRANCH=$(echo "$CURRENT" | jq -r '.baseRefName')
+  PARENT=$(pr_by_head "$BASE_BRANCH")
+  if [[ -z "$PARENT" ]]; then
+    # Base branch isn't the default branch and isn't any known PR's head;
+    # treat the current PR as the effective root.
+    break
+  fi
+  PARENT_NUM=$(echo "$PARENT" | jq -r '.number')
+  if [[ -n "${SEEN_DOWN[$PARENT_NUM]:-}" ]]; then
+    echo "Error: cycle detected walking down through PR #$PARENT_NUM" >&2
+    exit 2
+  fi
+  SEEN_DOWN[$PARENT_NUM]=1
+  CURRENT="$PARENT"
+done
+ROOT="$CURRENT"
+
+# Walk UP from the root, collecting every PR chained on top of it.
+#
+# GitHub auto-retargets a PR's base when the branch it was based on merges
+# and gets deleted, so several already-merged PRs can end up sharing the
+# same (now-stale) baseRefName. A single "first match" walk can pick the
+# wrong one and silently lose the branch that actually continues upward, so
+# this expands ALL children at each step (a full traversal, not one path)
+# and lets state filtering below sort out which nodes matter.
+TRAVERSAL_JSON=$(echo "$ALL_PRS" | jq -c --argjson root "$ROOT" '
+  (. + [$root] | unique_by(.number)) as $all
+  | ($root + {depth: 0}) as $root0
+  | {visited: [$root0], frontier: [$root0]}
+  | until(.frontier == [];
+      (.visited) as $vis
+      | (.frontier) as $front
+      | ([ $front[] as $p | $all[] | select(.baseRefName == $p.headRefName) | . + {depth: ($p.depth + 1)} ]) as $childrenAll
+      | ($childrenAll | unique_by(.number) | map(select(([.number] - ($vis | map(.number))) != []))) as $newChildren
+      | {visited: ($vis + $newChildren), frontier: $newChildren}
+    )
+  | .visited
+')
+
+STACK_JSON=$(echo "$TRAVERSAL_JSON" | jq -c '[.[] | select(.state == "OPEN") | .number]')
+CLOSED_JSON=$(echo "$TRAVERSAL_JSON" | jq -c '[.[] | select(.state != "OPEN") | .number]')
+# Leaves = open PRs with no open PR based on their head branch.
+LEAVES_JSON=$(echo "$TRAVERSAL_JSON" | jq -c '
+  . as $all
+  | [ $all[] | select(.state == "OPEN") | select(
+      (.headRefName) as $h | ($all | map(select(.state == "OPEN" and .baseRefName == $h)) | length) == 0
+    ) | .number ]
+')
+
+if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+  jq -n \
+    --argjson stack "$STACK_JSON" \
+    --arg root_branch "$DEFAULT_BRANCH" \
+    --argjson leaves "$LEAVES_JSON" \
+    --argjson closed "$CLOSED_JSON" \
+    '{stack: $stack, order: "bottom-to-top (root -> leaves)", root_branch: $root_branch, leaves: $leaves, closed: $closed}'
+else
+  echo "$DEFAULT_BRANCH"
+  echo "$TRAVERSAL_JSON" | jq -c 'sort_by(.depth)[]' | while read -r PR; do
+    NUM=$(echo "$PR" | jq -r '.number')
+    TITLE=$(echo "$PR" | jq -r '.title')
+    STATE=$(echo "$PR" | jq -r '.state')
+    DEPTH=$(echo "$PR" | jq -r '.depth')
+    INDENT=$(printf '    %.0s' $(seq 1 "$DEPTH"))
+    if [[ "$STATE" == "OPEN" ]]; then
+      MARK="PR #$NUM"
+    else
+      MARK="PR #$NUM (${STATE,,}, skip)"
+    fi
+    echo "  ${INDENT}└── ${MARK}: ${TITLE}"
+  done
+fi
