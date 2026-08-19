@@ -1,10 +1,13 @@
 #!/bin/bash
 #
-# Check if a new Copilot review should be requested.
+# Resolve review threads, hide stale reviews, and check if a new Copilot review is needed.
 #
-# Determines whether a new review is needed based on:
-#   - All previous reviews being resolved (sentinels)
-#   - Files having been changed since the last review
+# Performs the following actions:
+#   1. Resolve all open review threads (inline code comments)
+#   2. Hide stale/old reviews as "Resolved"
+#   3. Determine whether a new review is needed based on:
+#      - All previous reviews being resolved (sentinels)
+#      - Files having been changed since the last review
 #
 # Usage: refresh-needed <REPO> <PR_NUMBER> <FILES_CHANGED_COUNT>
 # Example: refresh-needed owner/repo 116 3
@@ -38,13 +41,114 @@ if ! [[ "$FILES_CHANGED" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
+echo "════════════════════════════════════════════════════════════════"
+echo "  Step 1: Resolve open review threads"
+echo "════════════════════════════════════════════════════════════════"
+resolve-pr-review-threads "$REPO" "$PR_NUM" || true
+echo ""
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  Step 2: Hide stale/old reviews"
+echo "════════════════════════════════════════════════════════════════"
+
+IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
+if [[ -z "$REPO_NAME" ]]; then
+  echo "Error: REPO must be in format 'owner/name'" >&2
+  exit 1
+fi
+
+REVIEW_IDS=$(review-database-ids "$REPO" "$PR_NUM" 2>/dev/null || echo "")
+HIDDEN_COUNT=0
+ERROR_REVIEW_COUNT=0
+
+if [[ -z "$REVIEW_IDS" ]]; then
+  echo "No reviews found for this PR"
+else
+  # Get all reviews and identify which ones to hide
+  REVIEWS=$(gh api graphql -f query="query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUM) {
+      reviews(first: 100) {
+        nodes {
+          databaseId
+          state
+          body
+          comments(first: 1) {
+            nodes {
+              id
+            }
+          }
+        }
+      }
+    }
+  }
+}" 2>/dev/null)
+
+  for ID in $REVIEW_IDS; do
+    REVIEW_DATA=$(echo "$REVIEWS" | jq ".data.repository.pullRequest.reviews.nodes[] | select(.databaseId == $ID)")
+    
+    if [[ -z "$REVIEW_DATA" ]]; then
+      continue
+    fi
+    
+    REVIEW_BODY=$(echo "$REVIEW_DATA" | jq -r '.body')
+    COMMENT_ID=$(echo "$REVIEW_DATA" | jq -r '.comments.nodes[0].id')
+    
+    # Check if this is an error review
+    if echo "$REVIEW_BODY" | grep -q "Copilot encountered an error"; then
+      ERROR_REVIEW_COUNT=$((ERROR_REVIEW_COUNT + 1))
+      echo "Skipping error review $ID (cannot be hidden; treating as resolved)"
+      continue
+    fi
+    
+    # Check if this is a sentinel review (no new comments)
+    if echo "$REVIEW_BODY" | grep -q "generated no new comments"; then
+      # Don't hide sentinel reviews—they serve as checkpoints showing when we last reviewed
+      continue
+    fi
+    
+    # This review has comments and is not a sentinel—try to hide it
+    if [[ ! -z "$COMMENT_ID" ]] && [[ "$COMMENT_ID" != "null" ]]; then
+      echo "Hiding review $ID..."
+      
+      RESULT=$(gh api graphql -f commentId="$COMMENT_ID" -f query='
+mutation($commentId: ID!) {
+  minimizeComment(input: {subjectId: $commentId, classifier: RESOLVED}) {
+    minimizedComment {
+      isMinimized
+    }
+  }
+}
+' 2>/dev/null || echo '{"data":{"minimizeComment":null}}')
+      
+      IS_MINIMIZED=$(echo "$RESULT" | jq -r '.data.minimizeComment.minimizedComment.isMinimized // false')
+      
+      if [[ "$IS_MINIMIZED" == "true" ]]; then
+        HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
+      fi
+    fi
+  done
+fi
+
+if [[ $HIDDEN_COUNT -gt 0 ]]; then
+  echo "✓ Hidden $HIDDEN_COUNT review(s)"
+fi
+if [[ $ERROR_REVIEW_COUNT -gt 0 ]]; then
+  echo "⚠ Treating $ERROR_REVIEW_COUNT error review(s) as resolved"
+fi
+echo ""
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  Step 3: Determine if new review is needed"
+echo "════════════════════════════════════════════════════════════════"
+
 # A new review is needed if:
 # 1. All reviews are sentinels (no outstanding comments)
 # 2. AND files have been changed (FILES_CHANGED > 0)
 
 ALL_SENTINEL=1
-for ID in $(review-database-ids "$REPO" "$PR_NUM" 2>/dev/null || echo ""); do
-  if not-sentinel-review "$REPO" "$PR_NUM" "$ID"; then
+for ID in $REVIEW_IDS; do
+  if not-sentinel-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
     # Review is NOT a sentinel (has outstanding comments)
     ALL_SENTINEL=0
     break
