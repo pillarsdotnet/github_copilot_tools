@@ -1,0 +1,140 @@
+#!/bin/bash
+#
+# Launch Google Chrome in debugging mode (from WSL side).
+#
+# This utility handles the WSL portion of the Chrome debugging workflow:
+# 1. Check if Chrome is already running in debug mode
+# 2. If not, launch Chrome with --remote-debugging-port=9222
+# 3. Prompt user to confirm GitHub login
+# 4. Set a flag file to track the active debugging session
+#
+# The actual CDP connection and automation happens on the Windows side via
+# request-copilot-review-windows utility.
+#
+# Exit codes:
+#   0 = Chrome debugging session ready (either existing or newly launched)
+#   1 = Error (Chrome launch failed, user declined login, etc.)
+#
+# Usage: launch-chrome-debugger
+#
+
+set -e
+
+# Flag file to track active debugging session
+DEBUG_SESSION_FLAG="$HOME/.copilot/chrome-debug-session.flag"
+CHROME_DEBUG_PORT=9222
+
+# Function to check if port is listening on Windows side
+# (Since we're in WSL, we can't directly check Windows ports, so we rely on the flag file)
+check_debug_session_active() {
+  if [ -f "$DEBUG_SESSION_FLAG" ]; then
+    SESSION_START=$(cat "$DEBUG_SESSION_FLAG")
+    SESSION_AGE=$(( $(date +%s) - SESSION_START ))
+    # Consider session active if less than 2 hours old
+    if [ $SESSION_AGE -lt 7200 ]; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Create flag directory if needed
+mkdir -p "$(dirname "$DEBUG_SESSION_FLAG")"
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  Chrome Debugging Session Manager (WSL Side)"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+
+# Check if debugging session is already active
+if check_debug_session_active; then
+  echo "✓ Chrome debugging session already active (started at $(date -d @$(cat $DEBUG_SESSION_FLAG)))"
+  echo "  Debug port: $CHROME_DEBUG_PORT"
+  echo "  Flag file: $DEBUG_SESSION_FLAG"
+  echo ""
+  exit 0
+fi
+
+echo "🚀 Launching Chrome in debugging mode..."
+echo "  Debug port: $CHROME_DEBUG_PORT"
+echo "  Profile directory: temporary isolated profile"
+echo ""
+
+# Find Chrome executable on Windows
+CHROME_PATHS=(
+  "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+  "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe"
+  "/mnt/c/Users/vincrr/AppData/Local/Google/Chrome/Application/chrome.exe"
+)
+
+CHROME_PATH=""
+for path in "${CHROME_PATHS[@]}"; do
+  if [ -f "$path" ]; then
+    CHROME_PATH="$path"
+    break
+  fi
+done
+
+if [ -z "$CHROME_PATH" ]; then
+  echo "✗ Error: Chrome not found in standard Windows locations"
+  exit 1
+fi
+
+echo "✓ Found Chrome at: $CHROME_PATH"
+echo ""
+
+# Create isolated profile directory for this debugging session
+DEBUG_PROFILE="/tmp/chrome-copilot-debug-$$"
+mkdir -p "$DEBUG_PROFILE"
+
+echo "📁 Debug profile: $DEBUG_PROFILE"
+echo ""
+
+# Launch Chrome with debugging enabled
+# Note: Output will show "Opening in existing browser session" if another instance is running,
+# but we'll proceed anyway and let the Windows-side tool handle connection logic.
+echo "Launching Chrome (background)..."
+"$CHROME_PATH" \
+  --user-data-dir="$DEBUG_PROFILE" \
+  --remote-debugging-port=$CHROME_DEBUG_PORT \
+  > /tmp/chrome-debug-stdout.log 2>&1 &
+
+CHROME_PID=$!
+echo "✓ Chrome PID: $CHROME_PID"
+echo ""
+
+# Wait for Chrome to stabilize
+sleep 3
+
+# Record this session start time
+echo $(date +%s) > "$DEBUG_SESSION_FLAG"
+chmod 600 "$DEBUG_SESSION_FLAG"
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  Debugging Session Configured"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+echo "ℹ️  Chrome is now running on the Windows side in debug mode."
+echo "     The Windows-side tool will connect via Chrome DevTools Protocol."
+echo ""
+echo "⚠️  IMPORTANT:"
+echo "     1. You should see a new Chrome window on your Windows desktop"
+echo "     2. Make sure you are logged into github.com with the correct GitHub account credentials"
+echo "     3. If not logged in, log in now (the Windows tool will wait)"
+echo ""
+
+# Prompt for confirmation
+read -p "Press ENTER once you've confirmed GitHub login in Chrome: " -t 300 || {
+  echo ""
+  echo "✗ Timeout waiting for confirmation"
+  rm -f "$DEBUG_SESSION_FLAG"
+  exit 1
+}
+
+echo ""
+echo "✓ Session ready for Windows-side automation"
+echo ""
+echo "Next: Run 'request-copilot-review-windows <PR_NUMBER>' from Windows"
+echo ""
+
+exit 0
