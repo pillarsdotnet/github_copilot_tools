@@ -34,40 +34,36 @@ if [[ -z "$REPO_NAME" ]]; then
   exit 1
 fi
 
-echo "🔍 Fetching review comment ID for review #$REVIEW_ID on $REPO PR #$PR_NUMBER..."
+echo "🔍 Fetching review ID for review #$REVIEW_ID on $REPO PR #$PR_NUMBER..."
 
-# Get the comment ID of the review (first comment in the review)
-COMMENT_ID=$(gh api graphql -f query='
+# Get the review's global ID (not a comment ID) - we minimize the review itself, not its comments
+REVIEW_GLOBAL_ID=$(gh api graphql -f query='
 query {
   repository(owner: "'$OWNER'", name: "'$REPO_NAME'") {
     pullRequest(number: '$PR_NUMBER') {
-      reviews(first: 50) {
+      reviews(first: 100) {
         nodes {
           databaseId
-          comments(first: 1) {
-            nodes {
-              id
-            }
-          }
+          id
         }
       }
     }
   }
 }
-' 2>/dev/null | jq -r ".data.repository.pullRequest.reviews.nodes[] | select(.databaseId == $REVIEW_ID) | .comments.nodes[0].id" | head -1)
+' 2>/dev/null | jq -r ".data.repository.pullRequest.reviews.nodes[] | select(.databaseId == $REVIEW_ID) | .id" | head -1)
 
-if [[ -z "$COMMENT_ID" ]] || [[ "$COMMENT_ID" == "null" ]]; then
-  echo "Error: Could not find comment ID for review #$REVIEW_ID" >&2
+if [[ -z "$REVIEW_GLOBAL_ID" ]] || [[ "$REVIEW_GLOBAL_ID" == "null" ]]; then
+  echo "Error: Could not find review ID for review #$REVIEW_ID" >&2
   exit 1
 fi
 
-echo "✓ Found comment ID: $COMMENT_ID"
+echo "✓ Found review ID: $REVIEW_GLOBAL_ID"
 echo ""
 echo "🔒 Hiding review with reason '$REASON'..."
 
-RESULT=$(gh api graphql -f commentId="$COMMENT_ID" -f query='
-mutation($commentId: ID!) {
-  minimizeComment(input: {subjectId: $commentId, classifier: RESOLVED}) {
+RESULT=$(gh api graphql -f subjectId="$REVIEW_GLOBAL_ID" -f query='
+mutation($subjectId: ID!) {
+  minimizeComment(input: {subjectId: $subjectId, classifier: RESOLVED}) {
     minimizedComment {
       isMinimized
       minimizedReason
