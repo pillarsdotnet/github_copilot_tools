@@ -85,19 +85,28 @@ func main() {
 			)
 
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "✗ Error: Could not find or click the review button\n")
-				fmt.Fprintf(os.Stderr, "  Last error: %v\n", err)
-				fmt.Fprintf(os.Stderr, "\n")
-				fmt.Fprintf(os.Stderr, "  Troubleshooting:\n")
-				fmt.Fprintf(os.Stderr, "  1. The button may not be visible on the PR page\n")
-				fmt.Fprintf(os.Stderr, "  2. GitHub's button selector may have changed\n")
-				fmt.Fprintf(os.Stderr, "  3. You may need to scroll to reveal the review section\n")
-				fmt.Fprintf(os.Stderr, "\n")
-				fmt.Fprintf(os.Stderr, "  Expected button:\n")
-				fmt.Fprintf(os.Stderr, "    ID: re-request-review-copilot-pull-request-reviewer\n")
-				fmt.Fprintf(os.Stderr, "    Name: re_request_reviewer_id\n")
-				fmt.Fprintf(os.Stderr, "    Type: submit\n")
-				os.Exit(1)
+				// Method 4: Try submitting the form directly
+				fmt.Printf("   Attempt 4: Submit form (pull-request-reviewers-form-*)\n")
+				err = chromedp.Run(taskCtx,
+					chromedp.Submit(`form[id*="pull-request-reviewers-form"]`, chromedp.ByQuery),
+				)
+
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "✗ Error: Could not find or click the review button\n")
+					fmt.Fprintf(os.Stderr, "  Last error: %v\n", err)
+					fmt.Fprintf(os.Stderr, "\n")
+					fmt.Fprintf(os.Stderr, "  Troubleshooting:\n")
+					fmt.Fprintf(os.Stderr, "  1. The button may not be visible on the PR page\n")
+					fmt.Fprintf(os.Stderr, "  2. GitHub's button selector may have changed\n")
+					fmt.Fprintf(os.Stderr, "  3. You may need to scroll to reveal the review section\n")
+					fmt.Fprintf(os.Stderr, "\n")
+					fmt.Fprintf(os.Stderr, "  Expected button:\n")
+					fmt.Fprintf(os.Stderr, "    ID: re-request-review-copilot-pull-request-reviewer\n")
+					fmt.Fprintf(os.Stderr, "    Name: re_request_reviewer_id\n")
+					fmt.Fprintf(os.Stderr, "    Type: submit\n")
+					fmt.Fprintf(os.Stderr, "    Form: pull-request-reviewers-form-* (for re-requesting reviews)\n")
+					os.Exit(1)
+				}
 			}
 		}
 	}
