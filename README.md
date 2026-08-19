@@ -638,6 +638,63 @@ stack-cycle-next-pr owner/repo 115 116 117 108 109 110 111 120 --json
 
 ---
 
+### 16. `apply-pr-diffs` - Apply a PR's changes as per-file diffs
+
+Rebuilds a PR's changes onto a fresh branch by diffing each file between
+two refs and applying those diffs directly, instead of replaying commit
+history. Useful when cherry-pick or rebase produce excessive conflicts
+because commits are tangled or touch overlapping config files. Only
+prepares and stages the result locally—does not commit or push.
+
+```bash
+apply-pr-diffs <BASE_REF> <PR_REF> [CLEAN_BRANCH] [--force]
+```
+
+**Examples:**
+```bash
+apply-pr-diffs origin/main origin/feature/x
+apply-pr-diffs origin/main origin/feature/x feature/x-clean --force
+```
+
+**Exit codes:**
+- `0` = All diffs applied cleanly (pre-commit clean or skipped)
+- `1` = One or more diffs failed to apply (conflict)—diffs are preserved for inspection
+- `2` = All diffs applied, but pre-commit found issues
+- `3` = Invalid arguments, not a git repo, dirty working tree, or branch already exists (pass `--force`)
+
+---
+
+### 17. `auto-rebase-pr` - Rebase a PR with automatic fallback
+
+Orchestrates the full STEP 2 rebase decision: tries a direct rebase first,
+falls back to a squashed cherry-pick, then falls back to `apply-pr-diffs`
+as a last resort. **Does not push by default**—force-pushing a shared
+branch is hard to reverse, so pass `--push` explicitly, or run the printed
+command yourself after reviewing the result.
+
+```bash
+auto-rebase-pr <REPO> <PR_NUMBER> [--push] [--force]
+```
+
+**Examples:**
+```bash
+auto-rebase-pr owner/repo 116          # prepare locally, print the push command
+auto-rebase-pr owner/repo 116 --push   # prepare and force-push the result
+```
+
+**Exit codes:**
+- `0` = Succeeded via direct rebase
+- `1` = Succeeded via cherry-pick
+- `2` = Succeeded via per-file diff application (`apply-pr-diffs`)
+- `3` = All strategies failed; manual intervention needed
+- `4` = Invalid arguments or setup error
+- `5` = Local result prepared successfully, but `--push` failed (e.g. remote moved)
+
+**Note:** When strategy 2 or 3 succeeds, the commit message is the PR title
+verbatim—review/amend it to conform to conventional-commits before pushing.
+
+---
+
 ## Workflow Examples
 
 ### Example 1: Check if review refresh is needed

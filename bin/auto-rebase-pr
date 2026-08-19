@@ -1,0 +1,203 @@
+#!/bin/bash
+#
+# Rebase a PR's branch onto its base, trying progressively more aggressive
+# fallback strategies so the AI doesn't have to manually decide which
+# approach to use for each PR:
+#
+#   1. Direct rebase (git rebase origin/<BASE>)
+#   2. Cherry-pick the PR's commits onto a fresh branch off origin/<BASE>,
+#      squashed into a single commit
+#   3. Per-file diff application (apply-pr-diffs), as a last resort when
+#      cherry-pick conflicts
+#
+# By default this only prepares the result locally-it does NOT push. Force
+# pushing a shared branch is a hard-to-reverse action, so pass --push to
+# have this script do it; otherwise it prints the exact command to run.
+#
+# Usage: auto-rebase-pr <REPO> <PR_NUMBER> [--push] [--force]
+# Example: auto-rebase-pr owner/repo 116
+#          auto-rebase-pr owner/repo 116 --push
+#
+# Options:
+#   --push   Force-push the result to the PR's remote head branch
+#   --force  Overwrite a pre-existing local <HEAD>-clean branch, if any
+#
+# Exit codes:
+#   0 = Succeeded via direct rebase
+#   1 = Succeeded via cherry-pick
+#   2 = Succeeded via per-file diff application
+#   3 = All strategies failed; manual intervention needed
+#   4 = Invalid arguments or setup error
+#   5 = Local result prepared successfully, but --push failed
+#
+
+set -e
+
+PUSH=0
+FORCE=0
+ARGS=()
+for ARG in "$@"; do
+  case "$ARG" in
+    --push) PUSH=1 ;;
+    --force) FORCE=1 ;;
+    *) ARGS+=("$ARG") ;;
+  esac
+done
+
+REPO="${ARGS[0]}"
+PR_NUMBER="${ARGS[1]}"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: auto-rebase-pr <REPO> <PR_NUMBER> [--push] [--force]" >&2
+  echo "Example: auto-rebase-pr owner/repo 116" >&2
+  exit 4
+fi
+
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+  echo "Error: Not inside a git repository" >&2
+  exit 4
+fi
+
+PR_INFO=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json baseRefName,headRefName,title 2>/dev/null || true)
+if [[ -z "$PR_INFO" ]]; then
+  echo "Error: Could not find PR #$PR_NUMBER on $REPO" >&2
+  exit 4
+fi
+BASE=$(echo "$PR_INFO" | jq -r '.baseRefName')
+HEAD=$(echo "$PR_INFO" | jq -r '.headRefName')
+TITLE=$(echo "$PR_INFO" | jq -r '.title')
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  auto-rebase-pr: $REPO #$PR_NUMBER ($HEAD -> $BASE)"
+echo "════════════════════════════════════════════════════════════════"
+
+git fetch origin "$BASE" "$HEAD" --quiet
+
+push_result() {
+  # $1 = local ref to push, $2 = 1 if it's a same-named branch (plain push), 0 if renaming a -clean branch
+  local LOCAL_REF="$1"
+  local SAME_NAME="$2"
+  if [[ $PUSH -ne 1 ]]; then
+    echo ""
+    echo "Not pushed (pass --push to push automatically). To push manually:"
+    if [[ "$SAME_NAME" == "1" ]]; then
+      echo "  git push --force-with-lease origin $HEAD"
+    else
+      echo "  git push --force-with-lease=\"$HEAD:\$(git rev-parse origin/$HEAD)\" origin $LOCAL_REF:$HEAD"
+    fi
+    return 0
+  fi
+  echo ""
+  echo "Pushing..."
+  if [[ "$SAME_NAME" == "1" ]]; then
+    if git push --force-with-lease origin "$HEAD"; then
+      echo "✓ Pushed to origin/$HEAD"
+    else
+      echo "✗ Push failed" >&2
+      return 1
+    fi
+  else
+    local EXPECT
+    EXPECT=$(git rev-parse "origin/$HEAD")
+    if git push --force-with-lease="$HEAD:$EXPECT" origin "$LOCAL_REF:$HEAD"; then
+      echo "✓ Pushed $LOCAL_REF to origin/$HEAD"
+    else
+      echo "✗ Push failed" >&2
+      return 1
+    fi
+  fi
+}
+
+# --- Strategy 1: direct rebase -----------------------------------------------
+
+echo ""
+echo "Strategy 1: direct rebase"
+if git checkout "$HEAD" > /dev/null 2>&1 || git checkout -b "$HEAD" "origin/$HEAD" > /dev/null 2>&1; then
+  git reset --hard "origin/$HEAD" > /dev/null
+  if git rebase "origin/$BASE" > /dev/null 2>&1; then
+    echo "✓ Rebased cleanly onto origin/$BASE"
+    if push_result "$HEAD" 1; then
+      exit 0
+    else
+      exit 5
+    fi
+  else
+    echo "✗ Conflicts; aborting rebase"
+    git rebase --abort > /dev/null 2>&1 || true
+  fi
+else
+  echo "✗ Could not check out $HEAD locally" >&2
+  exit 4
+fi
+
+# --- Strategy 2: cherry-pick, squashed into one commit -----------------------
+
+echo ""
+echo "Strategy 2: cherry-pick onto a fresh branch"
+CLEAN_BRANCH="${HEAD}-clean"
+
+if git rev-parse --verify "$CLEAN_BRANCH" > /dev/null 2>&1 && [[ $FORCE -ne 1 ]]; then
+  echo "✗ Branch '$CLEAN_BRANCH' already exists locally; pass --force to overwrite. Skipping to diff-apply." >&2
+else
+  git checkout -B "$CLEAN_BRANCH" "origin/$BASE" > /dev/null
+
+  CHERRY_FAILED=0
+  mapfile -t COMMITS < <(git log "origin/$BASE..origin/$HEAD" --reverse --format=%H)
+  if [[ ${#COMMITS[@]} -eq 0 ]]; then
+    echo "✗ No commits found between origin/$BASE and origin/$HEAD; skipping to diff-apply"
+    CHERRY_FAILED=1
+  else
+    for COMMIT in "${COMMITS[@]}"; do
+      if ! git cherry-pick --no-commit "$COMMIT" > /dev/null 2>&1; then
+        CHERRY_FAILED=1
+        break
+      fi
+    done
+  fi
+
+  if [[ $CHERRY_FAILED -eq 1 ]]; then
+    echo "✗ Cherry-pick conflicts; falling back to per-file diff application"
+    # `--abort` only works if the sequencer recognizes a cherry-pick "in
+    # progress", which a conflicting `--no-commit` cherry-pick doesn't
+    # reliably leave behind. `--quit` clears sequencer state unconditionally,
+    # then `reset --hard` discards the conflicted/staged tree (HEAD is still
+    # at origin/$BASE here since nothing in this loop was ever committed).
+    git cherry-pick --quit > /dev/null 2>&1 || true
+    git reset --hard HEAD > /dev/null 2>&1 || true
+    git checkout "$BASE" > /dev/null 2>&1 || git checkout - > /dev/null 2>&1 || true
+    git branch -D "$CLEAN_BRANCH" > /dev/null 2>&1 || true
+  else
+    git commit -m "$TITLE" --quiet
+    echo "✓ Cherry-picked ${#COMMITS[@]} commit(s) into one commit on $CLEAN_BRANCH"
+    echo "  (commit message is the PR title verbatim-review/amend before pushing)"
+    if push_result "$CLEAN_BRANCH" 0; then
+      exit 1
+    else
+      exit 5
+    fi
+  fi
+fi
+
+# --- Strategy 3: per-file diff application -----------------------------------
+
+echo ""
+echo "Strategy 3: per-file diff application"
+git checkout "$BASE" > /dev/null 2>&1 || true
+
+APPLY_ARGS=(apply-pr-diffs "origin/$BASE" "origin/$HEAD" "$CLEAN_BRANCH")
+[[ $FORCE -eq 1 ]] && APPLY_ARGS+=(--force)
+
+if "${APPLY_ARGS[@]}"; then
+  git commit -m "$TITLE" --quiet
+  echo "✓ Diff-applied and committed on $CLEAN_BRANCH"
+  echo "  (commit message is the PR title verbatim-review/amend before pushing)"
+  if push_result "$CLEAN_BRANCH" 0; then
+    exit 2
+  else
+    exit 5
+  fi
+else
+  echo ""
+  echo "✗ All strategies failed for $REPO #$PR_NUMBER. Manual intervention needed." >&2
+  exit 3
+fi

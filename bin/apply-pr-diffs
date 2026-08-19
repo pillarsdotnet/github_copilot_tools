@@ -1,0 +1,163 @@
+#!/bin/bash
+#
+# Apply a PR's changes onto a fresh branch as per-file diffs instead of a
+# commit-by-commit rebase or cherry-pick. Useful when cherry-pick produces
+# excessive conflicts because commits are tangled or touch overlapping
+# config files (.pre-commit-config.yaml, .vale.ini, etc.)-per-file diffs
+# ignore commit boundaries and apply changes directly.
+#
+# This script only prepares a local branch with the changes staged; it does
+# NOT commit or push. Committing (with a conventional-commits message) and
+# pushing are separate, deliberate steps-see PR-Review-Resolution-Process.md.
+#
+# Usage: apply-pr-diffs <BASE_REF> <PR_REF> [CLEAN_BRANCH] [--force]
+# Example: apply-pr-diffs origin/main origin/feature/x
+#          apply-pr-diffs origin/main origin/feature/x feature/x-clean
+#
+# Arguments:
+#   BASE_REF      Ref to diff from and branch off of (e.g. origin/main)
+#   PR_REF        Ref containing the PR's changes (e.g. origin/feature/x)
+#   CLEAN_BRANCH  Name for the new branch (default: <PR_REF-basename>-clean)
+#
+# Options:
+#   --force       Overwrite CLEAN_BRANCH if it already exists locally
+#
+# Exit codes:
+#   0 = All diffs applied cleanly (pre-commit clean or skipped)
+#   1 = One or more diffs failed to apply (conflict)
+#   2 = All diffs applied, but pre-commit found issues
+#   3 = Invalid arguments, not a git repo, dirty working tree, or branch exists (no --force)
+#
+
+set -e
+
+FORCE=0
+ARGS=()
+for ARG in "$@"; do
+  if [[ "$ARG" == "--force" ]]; then
+    FORCE=1
+  else
+    ARGS+=("$ARG")
+  fi
+done
+
+BASE_REF="${ARGS[0]}"
+PR_REF="${ARGS[1]}"
+CLEAN_BRANCH="${ARGS[2]:-${PR_REF##*/}-clean}"
+
+if [[ -z "$BASE_REF" ]] || [[ -z "$PR_REF" ]]; then
+  echo "Usage: apply-pr-diffs <BASE_REF> <PR_REF> [CLEAN_BRANCH] [--force]" >&2
+  echo "Example: apply-pr-diffs origin/main origin/feature/x" >&2
+  exit 3
+fi
+
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+  echo "Error: Not inside a git repository" >&2
+  exit 3
+fi
+
+if ! git rev-parse --verify "$BASE_REF" > /dev/null 2>&1; then
+  echo "Error: Ref not found: $BASE_REF" >&2
+  exit 3
+fi
+
+if ! git rev-parse --verify "$PR_REF" > /dev/null 2>&1; then
+  echo "Error: Ref not found: $PR_REF" >&2
+  exit 3
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Error: Working tree is dirty. Commit, stash, or discard changes first." >&2
+  exit 3
+fi
+
+if git rev-parse --verify "$CLEAN_BRANCH" > /dev/null 2>&1 && [[ $FORCE -ne 1 ]]; then
+  echo "Error: Branch '$CLEAN_BRANCH' already exists. Pass --force to overwrite." >&2
+  exit 3
+fi
+
+mapfile -t FILES < <(git diff --name-only "$BASE_REF".."$PR_REF")
+
+if [[ ${#FILES[@]} -eq 0 ]]; then
+  echo "No files changed between $BASE_REF and $PR_REF; nothing to do."
+  exit 0
+fi
+
+DIFF_DIR=$(mktemp -d)
+trap 'true' EXIT  # diffs are left in place on failure for inspection; nothing else to clean up
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  Applying ${#FILES[@]} file diff(s): $BASE_REF -> $PR_REF"
+echo "════════════════════════════════════════════════════════════════"
+
+i=0
+for FILE in "${FILES[@]}"; do
+  i=$((i + 1))
+  DIFF_FILE="$DIFF_DIR/$(printf '%04d' "$i")-$(echo "$FILE" | tr '/ ' '__').diff"
+  git diff "$BASE_REF".."$PR_REF" -- "$FILE" > "$DIFF_FILE"
+done
+
+ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+if git rev-parse --verify "$CLEAN_BRANCH" > /dev/null 2>&1; then
+  git checkout -B "$CLEAN_BRANCH" "$BASE_REF" > /dev/null
+else
+  git checkout -b "$CLEAN_BRANCH" "$BASE_REF" > /dev/null
+fi
+echo "✓ Created branch '$CLEAN_BRANCH' from $BASE_REF"
+echo ""
+
+APPLIED=0
+FAILED_FILE=""
+for DIFF_FILE in "$DIFF_DIR"/*.diff; do
+  if git apply "$DIFF_FILE" 2>/tmp/apply-pr-diffs-error.$$; then
+    APPLIED=$((APPLIED + 1))
+  else
+    FAILED_FILE="$DIFF_FILE"
+    break
+  fi
+done
+
+if [[ -n "$FAILED_FILE" ]]; then
+  echo "✗ Failed to apply: $FAILED_FILE"
+  echo ""
+  cat /tmp/apply-pr-diffs-error.$$ >&2
+  rm -f /tmp/apply-pr-diffs-error.$$
+  echo ""
+  echo "Applied $APPLIED of ${#FILES[@]} diffs before failing."
+  echo "Branch '$CLEAN_BRANCH' left checked out with partial changes for inspection."
+  echo "Diffs preserved at: $DIFF_DIR"
+  echo "Switch back with: git checkout $ORIGINAL_BRANCH"
+  exit 1
+fi
+rm -f /tmp/apply-pr-diffs-error.$$
+
+echo "✓ Applied all ${#FILES[@]} diff(s) cleanly"
+echo ""
+
+git add -- "${FILES[@]}"
+echo "Staged files:"
+git status --short | sed 's/^/  /'
+echo ""
+
+if command -v pre-commit > /dev/null 2>&1 && [[ -f .pre-commit-config.yaml ]]; then
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  Running pre-commit on changed files"
+  echo "════════════════════════════════════════════════════════════════"
+  if pre-commit run --files "${FILES[@]}"; then
+    echo "✓ pre-commit clean"
+  else
+    echo "✗ pre-commit found issues (may have auto-fixed files; review with git status/diff)"
+    echo "Diffs preserved at: $DIFF_DIR"
+    exit 2
+  fi
+else
+  echo "(pre-commit not available or no .pre-commit-config.yaml; skipped)"
+fi
+
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "  Ready on branch '$CLEAN_BRANCH': ${#FILES[@]} file(s) staged"
+echo "════════════════════════════════════════════════════════════════"
+echo "Next: review with 'git diff --cached', commit, then push."
+rm -rf "$DIFF_DIR"

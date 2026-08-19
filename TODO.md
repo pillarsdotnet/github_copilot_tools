@@ -433,9 +433,23 @@ This document identifies workflow steps in the stacked PR review process that wo
 
 See `README.md` for full usage of each.
 
-### Phase 2 (Core Rebase Automation - 3-4 days)
-4. `auto-rebase-pr` (highest impact, most complex)
-5. `apply-pr-diffs` (supports auto-rebase)
+### Phase 2 (Core Rebase Automation - 3-4 days) — ✅ DONE (2026-08-19)
+4. ✅ `auto-rebase-pr` (highest impact, most complex) — cascades rebase →
+   cherry-pick → `apply-pr-diffs`; does NOT auto-push (requires `--push`),
+   since force-pushing a shared branch is hard to reverse. Validated with a
+   disposable local bare-repo remote through all three strategies, including
+   a genuine cherry-pick conflict cascading correctly to the diff-apply
+   fallback.
+5. ✅ `apply-pr-diffs` (supports auto-rebase) — validated clean-apply,
+   pre-commit-failure, and branch-exists-guard paths.
+
+Note: `auto-rebase-pr` tries direct rebase first per this roadmap's original
+order. `PR-Review-Resolution-Process.md` instead lists cherry-pick as
+"recommended first" and direct rebase as a "legacy approach". In practice a
+plain rebase and a cherry-pick of the same commits hit the same conflicts
+(same 3-way merge), so trying the cheap rebase first costs nothing when it
+works and falls through identically when it doesn't. Revisit the doc's
+wording if that assumption turns out wrong in practice.
 
 ### Phase 3 (Failure Analysis - 2-3 days)
 6. `analyze-ci-failures` (supports fix-precommit-failures)
