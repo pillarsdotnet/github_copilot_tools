@@ -385,19 +385,19 @@ done
 
 ---
 
-### 11. `is-rebase-only` - Analyze if changes are from rebasing
+### 11. `check-changed-files` - Count the number of files changed beyond a simple rebase
 
 Compare files changed between branches to determine if a branch contains
 only rebased changes or also has new local modifications.
 
 ```bash
-is-rebase-only <BASE_BRANCH> <HEAD_BRANCH>
+check-changed-files <BASE_BRANCH> <HEAD_BRANCH>
 ```
 
 **Examples:**
 ```bash
-is-rebase-only origin/main feature/my-feature
-is-rebase-only origin/main HEAD
+check-changed-files origin/main feature/my-feature
+check-changed-files origin/main HEAD
 ```
 
 **Output:**
@@ -429,68 +429,94 @@ Files changed in BOTH (rebased + locally modified):
 **Use cases:**
 ```bash
 # Check if a branch only has rebase changes
-is-rebase-only origin/main feature/branch-name
-
-# Check if current branch matches remote HEAD exactly
-is-rebase-only origin/main HEAD
+check-changed-files origin/main feature/branch-name
+CHANGED_FILES=$?
 
 # Use in scripts
-if is-rebase-only origin/main HEAD | grep -q "Pure rebase"; then
-  echo "Ready to push rebase"
+if check-changed-files origin/main HEAD; then
+  echo 'Rebase only; no local changes'
+fi
+```
+
+### 12. `refresh-needed` - Determine if a new review should be requested
+
+Check if a new Copilot review is needed based on whether all previous reviews are
+resolved and new files have been changed.
+
+```bash
+refresh-needed <REPO> <PR_NUMBER> <FILES_CHANGED_COUNT>
+```
+
+**Arguments:**
+- `REPO` - Repository in format `owner/repo-name`
+- `PR_NUMBER` - Pull request number
+- `FILES_CHANGED_COUNT` - Number of files changed since last review (typically from `check-changed-files`)
+
+**Examples:**
+```bash
+refresh-needed owner/repo 116 3
+refresh-needed owner/repo 42 0
+```
+
+**Output:**
+```
+✓ New review needed: All previous reviews resolved, 3 file(s) changed
+```
+
+or
+
+```
+✗ New review not needed:
+  - Outstanding comments remain in previous reviews
+  - No files changed since last review
+```
+
+**Exit codes:**
+- `0` = New review IS needed (all reviews resolved AND files changed)
+- `1` = New review NOT needed (no changes or reviews still outstanding)
+
+**Use cases:**
+```bash
+# Check if review refresh is needed
+CHANGED=$(check-changed-files origin/main HEAD)
+if refresh-needed owner/repo 116 "$CHANGED"; then
+  echo "✓ Ready to request new Copilot review"
+  request-copilot-review owner/repo 116
+else
+  echo "✗ Address outstanding comments before requesting new review"
+fi
+
+# Combine with other workflow steps
+if refresh-needed "$REPO" "$PR" 0; then
+  echo "No files changed but all reviews are resolved"
 fi
 ```
 
 ---
 
-## Common Workflows
+## Workflow Examples
 
-### Workflow 1: Check if PR is ready for merge
+### Example 1: Check if review refresh is needed
 
 ```bash
 #!/bin/bash
 
 REPO="owner/repo"
 PR=116
-LATEST=$(latest-copilot-review-id "$REPO" "$PR")
 
-if ! not-sentinel-review "$REPO" "$PR" "$LATEST" && ! has-post-sentinel-commits "$REPO" "$PR"; then
-  echo "✓ PR is ready for merge!"
-  echo "  - Latest Copilot review is a sentinel (no outstanding comments)"
-  echo "  - No new commits after review"
+# Get number of files changed since last review
+CHANGED_FILES=$(check-changed-files origin/main HEAD)
+
+# Check if new review should be requested
+if refresh-needed "$REPO" "$PR" "$CHANGED_FILES"; then
+  echo "✓ All reviews resolved and new files changed"
+  echo "  Ready to request new Copilot review"
 else
-  echo "✗ PR needs attention"
-  if not-sentinel-review "$REPO" "$PR" "$LATEST"; then
-    echo "  - Latest review has outstanding comments to address"
-  fi
-  if has-post-sentinel-commits "$REPO" "$PR"; then
-    echo "  - New commits after review"
-  fi
+  echo "✗ Not ready for new review yet"
 fi
 ```
 
-### Workflow 2: Resolve all issues and hide review
-
-```bash
-#!/bin/bash
-
-REPO="owner/repo"
-PR=116
-
-# 1. Fix code issues and commit
-git add .
-git commit -m "fix: address Copilot review comments"
-git push
-
-# 2. Resolve all open threads
-resolve-pr-review-threads "$REPO" "$PR"
-
-# 3. Hide the old review as resolved
-hide-pr-review "$REPO" "$PR" $(latest-copilot-review-id "$REPO" "$PR") "Resolved"
-
-echo "✓ Ready to request new Copilot review"
-```
-
-### Workflow 3: List all Copilot feedback
+### Example 2: List all Copilot feedback
 
 ```bash
 #!/bin/bash
@@ -533,40 +559,6 @@ Required scopes: `repo` (for private repos) or `public_repo` (for public repos)
 
 - `GH_REPO`: Override default repo (format: `owner/repo-name`)
 - `GH_TOKEN`: GitHub authentication token (set by `gh auth login`)
-
----
-
-## Script Architecture
-
-Each script follows a consistent pattern:
-
-1. **Argument parsing** - Validate PR number and optional repo
-2. **GraphQL query** - Fetch data via GitHub API
-3. **JSON filtering** - Process results with `jq`
-4. **Output** - Display results or return exit code
-
-### GraphQL Examples
-
-```bash
-# Get all reviews for a PR
-gh api graphql -f query='query {
-  repository(owner: "owner", name: "repo") {
-    pullRequest(number: 116) {
-      reviews(first: 100) { ... }
-    }
-  }
-}'
-
-# Resolve a review thread
-gh api graphql -f threadId="PRRT_..." -f query='
-mutation ResolveThread($threadId: ID!) {
-  resolveReviewThread(input: {threadId: $threadId}) {
-    clientMutationId
-  }
-}'
-```
-
----
 
 ## Troubleshooting
 

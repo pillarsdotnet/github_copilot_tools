@@ -6,8 +6,8 @@
 # between remote HEAD and local HEAD. Returns the count of files that appear in
 # both lists (files that have been both rebased from upstream and locally modified).
 #
-# Usage: is-rebase-only <BASE_BRANCH> <HEAD_BRANCH>
-# Example: is-rebase-only origin/main feature/my-feature
+# Usage: check-changed-files <BASE_BRANCH> <HEAD_BRANCH>
+# Example: check-changed-files origin/main feature/my-feature
 #
 # Exit codes:
 #   0 = Analysis complete (check output for count)
@@ -22,8 +22,8 @@ HEAD_BRANCH="$2"
 
 # Validation
 if [[ -z "$BASE_BRANCH" ]] || [[ -z "$HEAD_BRANCH" ]]; then
-  echo "Usage: is-rebase-only <BASE_BRANCH> <HEAD_BRANCH>" >&2
-  echo "Example: is-rebase-only origin/main feature/my-feature" >&2
+  echo "Usage: check-changed-files <BASE_BRANCH> <HEAD_BRANCH>" >&2
+  echo "Example: check-changed-files origin/main feature/my-feature" >&2
   echo "" >&2
   echo "Returns the number of files changed in both:" >&2
   echo "  - Between remote BASE and local HEAD" >&2
@@ -103,5 +103,5 @@ elif [[ $COMMON_COUNT -eq 0 ]]; then
 else
   echo "⚠ Mixed: Branch has both rebased changes and new local changes"
   echo "  $COMMON_COUNT file(s) were modified and then rebased"
-  exit 0
+  exit $COMMON_COUNT
 fi

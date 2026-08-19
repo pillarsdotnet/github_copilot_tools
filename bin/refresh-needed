@@ -1,0 +1,67 @@
+#!/bin/bash
+#
+# Check if a new Copilot review should be requested.
+#
+# Determines whether a new review is needed based on:
+#   - All previous reviews being resolved (sentinels)
+#   - Files having been changed since the last review
+#
+# Usage: refresh-needed <REPO> <PR_NUMBER> <FILES_CHANGED_COUNT>
+# Example: refresh-needed owner/repo 116 3
+#
+# Arguments:
+#   REPO                 Repository in format owner/repo-name
+#   PR_NUMBER            Pull request number
+#   FILES_CHANGED_COUNT  Number of files changed since last review (from check-changed-files)
+#
+# Exit codes:
+#   0 = New review IS needed (all reviews resolved AND files changed)
+#   1 = New review NOT needed (no changes or reviews still outstanding)
+#
+
+set -e
+
+REPO="$1"
+PR_NUM="$2"
+FILES_CHANGED="$3"
+
+# Validation
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUM" ]] || [[ -z "$FILES_CHANGED" ]]; then
+  echo "Usage: refresh-needed <REPO> <PR_NUMBER> <FILES_CHANGED_COUNT>" >&2
+  echo "Example: refresh-needed owner/repo 116 3" >&2
+  exit 1
+fi
+
+# Check if FILES_CHANGED is a valid number
+if ! [[ "$FILES_CHANGED" =~ ^[0-9]+$ ]]; then
+  echo "Error: FILES_CHANGED_COUNT must be a number" >&2
+  exit 1
+fi
+
+# A new review is needed if:
+# 1. All reviews are sentinels (no outstanding comments)
+# 2. AND files have been changed (FILES_CHANGED > 0)
+
+ALL_SENTINEL=1
+for ID in $(review-database-ids "$REPO" "$PR_NUM" 2>/dev/null || echo ""); do
+  if not-sentinel-review "$REPO" "$PR_NUM" "$ID"; then
+    # Review is NOT a sentinel (has outstanding comments)
+    ALL_SENTINEL=0
+    break
+  fi
+done
+
+# Return 0 if new review is needed
+if [[ $ALL_SENTINEL -eq 1 ]] && [[ $FILES_CHANGED -gt 0 ]]; then
+  echo "✓ New review needed: All previous reviews resolved, $FILES_CHANGED file(s) changed"
+  exit 0
+else
+  echo "✗ New review not needed:"
+  if [[ $ALL_SENTINEL -eq 0 ]]; then
+    echo "  - Outstanding comments remain in previous reviews"
+  fi
+  if [[ $FILES_CHANGED -eq 0 ]]; then
+    echo "  - No files changed since last review"
+  fi
+  exit 1
+fi
