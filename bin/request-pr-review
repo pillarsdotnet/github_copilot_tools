@@ -1,0 +1,98 @@
+#!/bin/bash
+#
+# Coordinate the two-part Chrome debugging workflow for requesting Copilot reviews.
+#
+# This script handles the complete STEP 12 workflow:
+# 1. Launch Chrome in debugging mode (WSL-side via launch-chrome-debugger)
+# 2. Wait for user GitHub confirmation
+# 3. Execute the Windows-side tool to automate the PR review button click
+#
+# IMPORTANT: The Windows-side tool (request-copilot-review-windows.exe) must be
+# executed from a Windows context (PowerShell, Command Prompt, or via wsl.exe invocation).
+#
+# Exit codes:
+#   0 = Review request completed successfully
+#   1 = Error (launch failed, user declined, Windows tool failed, etc.)
+#
+# Usage: request-pr-review <REPO> <PR_NUMBER>
+# Example: request-pr-review owner/repo 116
+#
+
+set -e
+
+REPO="$1"
+PR_NUM="$2"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUM" ]]; then
+  echo "Usage: request-pr-review <REPO> <PR_NUMBER>" >&2
+  echo "Example: request-pr-review owner/repo 116" >&2
+  exit 1
+fi
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  STEP 12: Request New Copilot Review"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+
+# Step 1: Launch Chrome in debug mode (WSL-side)
+echo "Step 1: Launching Chrome in debugging mode..."
+echo ""
+
+if ! launch-chrome-debugger; then
+  echo "✗ Failed to launch Chrome debugging session"
+  exit 1
+fi
+
+echo ""
+echo "✓ Chrome debugging session ready"
+echo ""
+
+# Step 2: Call the Windows-side tool
+# The tool must run from Windows, so we need to invoke it via powershell or cmd
+echo "════════════════════════════════════════════════════════════════"
+echo "  Step 2: Invoking Windows-side automation..."
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+
+# Find the Windows tool
+WINDOWS_TOOL="$HOME/.copilot-tools/request-copilot-review-windows.exe"
+
+if [ ! -f "$WINDOWS_TOOL" ]; then
+  echo "✗ Error: Windows tool not found at $WINDOWS_TOOL"
+  echo ""
+  echo "Installation:"
+  echo "  1. From the github_copilot_tools repository, the Windows tool was built at:"
+  echo "     ~/src/github/pillarsdotnet/github_copilot_tools/cmd/request-copilot-review-windows/request-copilot-review-windows.exe"
+  echo ""
+  echo "  2. Copy it to: $WINDOWS_TOOL"
+  echo "     cp ~/src/github/pillarsdotnet/github_copilot_tools/cmd/request-copilot-review-windows/request-copilot-review-windows.exe $WINDOWS_TOOL"
+  echo ""
+  exit 1
+fi
+
+echo "Executing: $WINDOWS_TOOL -pr $PR_NUM"
+echo ""
+
+# Run the Windows tool
+"$WINDOWS_TOOL" -pr "$PR_NUM"
+TOOL_EXIT=$?
+
+echo ""
+
+if [ $TOOL_EXIT -eq 0 ]; then
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  ✓ Review Request Complete"
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+  echo "GitHub has queued a new Copilot review for PR #$PR_NUM"
+  echo ""
+  echo "Expected next steps:"
+  echo "  1. Wait 1-2 minutes for Copilot to analyze the PR"
+  echo "  2. Refresh the GitHub PR page to see the new review"
+  echo "  3. Continue with the next PR in the stack if applicable"
+  echo ""
+  exit 0
+else
+  echo "✗ Windows tool returned error code: $TOOL_EXIT"
+  exit 1
+fi
