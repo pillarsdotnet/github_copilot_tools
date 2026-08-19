@@ -59,4 +59,5 @@ fi
 
 # Get reviews and extract databaseId values
 # copilot-reviews returns JSON objects one per line (JSONL format)
-"$COPILOT_REVIEWS" "$REPO" "$PR_NUMBER" 2>/dev/null | jq -r '.databaseId'
+# Use --json flag to get raw JSON output
+"$COPILOT_REVIEWS" "$REPO" "$PR_NUMBER" --json 2>/dev/null | jq -r '.databaseId'
