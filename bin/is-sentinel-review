@@ -1,0 +1,36 @@
+#!/bin/bash
+#
+# Check if a Copilot review IS a sentinel (has no outstanding comments).
+#
+# A sentinel review contains "generated no new comments", meaning Copilot
+# found no new issues to report. This is the opposite of not-sentinel-review.
+#
+# Usage: is-sentinel-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID>
+# Example: is-sentinel-review owner/repo 116 4964619882
+#
+# Exit codes:
+#   0 = Review IS a sentinel (no new comments found)
+#   1 = Review is NOT a sentinel (has comments that need addressing)
+#   2 = Review not found or error
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+REVIEW_ID="$3"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]] || [[ -z "$REVIEW_ID" ]]; then
+  echo "Usage: is-sentinel-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID>" >&2
+  echo "Example: is-sentinel-review owner/repo 116 4964619882" >&2
+  exit 2
+fi
+
+# Use not-sentinel-review and invert the exit code
+if not-sentinel-review "$REPO" "$PR_NUMBER" "$REVIEW_ID" 2>/dev/null; then
+  # not-sentinel-review returned 0 (is NOT a sentinel)
+  exit 1
+else
+  # not-sentinel-review returned 1 (IS a sentinel)
+  exit 0
+fi

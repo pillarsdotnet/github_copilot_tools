@@ -4,10 +4,19 @@
 #
 # Performs the following actions:
 #   1. Resolve all open review threads (inline code comments)
-#   2. Hide stale/old reviews as "Resolved"
+#   2. Hide stale/old reviews:
+#      - Non-sentinel reviews (those with actionable comments)
+#      - Sentinel reviews with subsequent changes (outdated checkpoints)
 #   3. Determine whether a new review is needed based on:
-#      - All previous reviews being resolved (sentinels)
+#      - All remaining reviews being sentinels
 #      - Files having been changed since the last review
+#
+# Exit codes:
+#   0 = New review IS needed (all reviews are sentinels AND files changed)
+#   1 = New review NOT needed (reviews remain OR no file changes)
+#
+# Note: There should be at most one sentinel review per PR. Sentinel reviews
+# represent a "clean" checkpoint and become outdated if new changes are made.
 #
 # Usage: refresh-needed <REPO> <PR_NUMBER> <FILES_CHANGED_COUNT>
 # Example: refresh-needed owner/repo 116 3
@@ -16,10 +25,6 @@
 #   REPO                 Repository in format owner/repo-name
 #   PR_NUMBER            Pull request number
 #   FILES_CHANGED_COUNT  Number of files changed since last review (from check-changed-files)
-#
-# Exit codes:
-#   0 = New review IS needed (all reviews resolved AND files changed)
-#   1 = New review NOT needed (no changes or reviews still outstanding)
 #
 
 set -e
@@ -59,82 +64,36 @@ fi
 
 REVIEW_IDS=$(review-database-ids "$REPO" "$PR_NUM" 2>/dev/null || echo "")
 HIDDEN_COUNT=0
-ERROR_REVIEW_COUNT=0
+SKIPPED_COUNT=0
 
-if [[ -z "$REVIEW_IDS" ]]; then
-  echo "No reviews found for this PR"
-else
-  # Get all reviews and identify which ones to hide
-  REVIEWS=$(gh api graphql -f query="query {
-  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
-    pullRequest(number: $PR_NUM) {
-      reviews(first: 100) {
-        nodes {
-          databaseId
-          state
-          body
-          comments(first: 1) {
-            nodes {
-              id
-            }
-          }
-        }
-      }
-    }
-  }
-}" 2>/dev/null)
+for ID in $REVIEW_IDS; do
+  # Check if this is a sentinel review
+  if is-sentinel-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
+    # This IS a sentinel review
+    if (( FILES_CHANGED )); then
+      # Sentinel reviews become outdated when new changes are made
+      echo "Hiding outdated sentinel review $ID..."
+      hide-pr-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null || true
+      HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
+    else
+      # No changes; keep the sentinel review as a checkpoint
+      echo "Keeping sentinel review $ID (no new changes)"
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    fi
+  else
+    # This is NOT a sentinel—it has actionable comments
+    echo "Hiding review $ID (outstanding comments)..."
+    hide-pr-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null || true
+    HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
+  fi
+done
 
-  for ID in $REVIEW_IDS; do
-    REVIEW_DATA=$(echo "$REVIEWS" | jq ".data.repository.pullRequest.reviews.nodes[] | select(.databaseId == $ID)")
-    
-    if [[ -z "$REVIEW_DATA" ]]; then
-      continue
-    fi
-    
-    REVIEW_BODY=$(echo "$REVIEW_DATA" | jq -r '.body')
-    COMMENT_ID=$(echo "$REVIEW_DATA" | jq -r '.comments.nodes[0].id')
-    
-    # Check if this is an error review
-    if echo "$REVIEW_BODY" | grep -q "Copilot encountered an error"; then
-      ERROR_REVIEW_COUNT=$((ERROR_REVIEW_COUNT + 1))
-      echo "Skipping error review $ID (cannot be hidden; treating as resolved)"
-      continue
-    fi
-    
-    # Check if this is a sentinel review (no new comments)
-    if echo "$REVIEW_BODY" | grep -q "generated no new comments"; then
-      # Don't hide sentinel reviews—they serve as checkpoints showing when we last reviewed
-      continue
-    fi
-    
-    # This review has comments and is not a sentinel—try to hide it
-    if [[ ! -z "$COMMENT_ID" ]] && [[ "$COMMENT_ID" != "null" ]]; then
-      echo "Hiding review $ID..."
-      
-      RESULT=$(gh api graphql -f commentId="$COMMENT_ID" -f query='
-mutation($commentId: ID!) {
-  minimizeComment(input: {subjectId: $commentId, classifier: RESOLVED}) {
-    minimizedComment {
-      isMinimized
-    }
-  }
-}
-' 2>/dev/null || echo '{"data":{"minimizeComment":null}}')
-      
-      IS_MINIMIZED=$(echo "$RESULT" | jq -r '.data.minimizeComment.minimizedComment.isMinimized // false')
-      
-      if [[ "$IS_MINIMIZED" == "true" ]]; then
-        HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
-      fi
-    fi
-  done
-fi
-
+echo ""
 if [[ $HIDDEN_COUNT -gt 0 ]]; then
   echo "✓ Hidden $HIDDEN_COUNT review(s)"
 fi
-if [[ $ERROR_REVIEW_COUNT -gt 0 ]]; then
-  echo "⚠ Treating $ERROR_REVIEW_COUNT error review(s) as resolved"
+if [[ $SKIPPED_COUNT -gt 0 ]]; then
+  echo "✓ Kept $SKIPPED_COUNT sentinel review(s) as checkpoint"
 fi
 echo ""
 
@@ -143,29 +102,29 @@ echo "  Step 3: Determine if new review is needed"
 echo "════════════════════════════════════════════════════════════════"
 
 # A new review is needed if:
-# 1. All reviews are sentinels (no outstanding comments)
+# 1. All remaining reviews are sentinels (no outstanding comments)
 # 2. AND files have been changed (FILES_CHANGED > 0)
 
 ALL_SENTINEL=1
 for ID in $REVIEW_IDS; do
-  if not-sentinel-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
+  if ! is-sentinel-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
     # Review is NOT a sentinel (has outstanding comments)
     ALL_SENTINEL=0
     break
   fi
 done
 
-# Return 0 if new review is needed
-if [[ $ALL_SENTINEL -eq 1 ]] && [[ $FILES_CHANGED -gt 0 ]]; then
-  echo "✓ New review needed: All previous reviews resolved, $FILES_CHANGED file(s) changed"
+# Determine exit code
+if [[ $ALL_SENTINEL -eq 1 ]] && (( FILES_CHANGED )); then
+  echo "✓ New review needed: All reviews resolved, $FILES_CHANGED file(s) changed"
   exit 0
 else
   echo "✗ New review not needed:"
   if [[ $ALL_SENTINEL -eq 0 ]]; then
     echo "  - Outstanding comments remain in previous reviews"
   fi
-  if [[ $FILES_CHANGED -eq 0 ]]; then
-    echo "  - No files changed since last review"
+  if ! (( FILES_CHANGED )); then
+    echo "  - No files changed since last review (pure rebase)"
   fi
   exit 1
 fi
