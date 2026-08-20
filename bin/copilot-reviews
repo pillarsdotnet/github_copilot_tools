@@ -2,30 +2,60 @@
 #
 # Get all open (unhidden) GitHub Copilot reviews on a PR.
 #
-# Usage: copilot-reviews <REPO> <PR_NUMBER> [--json]
-# Example: copilot-reviews owner/repo 116
+# Usage: copilot-reviews [-r REPO] <PR_NUMBER> [--json]
+# Example: copilot-reviews -r owner/repo 116
+#          copilot-reviews 116  # REPO derived from cwd
+#
+# -r/REPO is optional: if not given, it's derived from the current
+# directory's GitHub remote instead.
 #
 # Output: Human-readable reviews with ID and full body text
 #   Format: Review #<databaseId>:\n<body>\n---
 #
 # Options:
+#   -r REPO   Repository in owner/repo format (may appear anywhere in argv)
 #   --json    Output raw JSON objects (one per line) instead of formatted text
 #
 
 set -e
 
-REPO="$1"
-PR_NUMBER="$2"
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 1 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 1 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
+
+if [[ -z "$REPO" ]]; then
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 1
+  fi
+fi
+PR_NUMBER="$1"
 OUTPUT_FORMAT="text"  # default to human-readable text
 
 # Check for --json flag
-if [[ "$3" == "--json" ]]; then
+if [[ "$2" == "--json" ]]; then
   OUTPUT_FORMAT="json"
 fi
 
-if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
-  echo "Usage: copilot-reviews <REPO> <PR_NUMBER> [--json]" >&2
-  echo "Example: copilot-reviews owner/repo 116" >&2
+if [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: copilot-reviews [-r REPO] <PR_NUMBER> [--json]" >&2
+  echo "Example: copilot-reviews -r owner/repo 116" >&2
   echo "" >&2
   echo "Output formats:" >&2
   echo "  text (default): Review #<id>:\\n<body>\\n---" >&2

@@ -5,8 +5,12 @@
 # Outputs all databaseId values from copilot-reviews, one per line.
 # Useful for piping to other commands or looping over review IDs.
 #
-# Usage: review-database-ids <REPO> <PR_NUMBER>
-# Example: review-database-ids owner/repo 116
+# Usage: review-database-ids [-r REPO] <PR_NUMBER>
+# Example: review-database-ids -r owner/repo 116
+#          review-database-ids 116  # REPO derived from cwd
+#
+# -r/REPO is optional: if not given, it's derived from the current
+# directory's GitHub remote instead.
 #
 # Output: One databaseId per line
 #
@@ -30,14 +34,39 @@
 #   1 = Invalid arguments
 #
 
-# Arguments
-REPO="$1"
-PR_NUMBER="$2"
+# Arguments: -r/REPO is optional (see header comment above).
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 1 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 1 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
+
+if [[ -z "$REPO" ]]; then
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 1
+  fi
+fi
+PR_NUMBER="$1"
 
 # Validation
-if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
-  echo "Usage: review-database-ids <REPO> <PR_NUMBER>" >&2
-  echo "Example: review-database-ids owner/repo 116" >&2
+if [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: review-database-ids [-r REPO] <PR_NUMBER>" >&2
+  echo "Example: review-database-ids -r owner/repo 116" >&2
   exit 1
 fi
 
@@ -60,4 +89,4 @@ fi
 # Get reviews and extract databaseId values
 # copilot-reviews returns JSON objects one per line (JSONL format)
 # Use --json flag to get raw JSON output
-"$COPILOT_REVIEWS" "$REPO" "$PR_NUMBER" --json 2>/dev/null | jq -r '.databaseId'
+"$COPILOT_REVIEWS" -r "$REPO" "$PR_NUMBER" --json 2>/dev/null | jq -r '.databaseId'

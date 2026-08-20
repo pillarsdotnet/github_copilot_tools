@@ -5,11 +5,15 @@
 # "cycle back through the stack" decision so the AI doesn't have to manually
 # check each PR's review state every pass.
 #
-# Usage: stack-cycle-next-pr <REPO> <PR_NUMBER...> [--json]
-# Example: stack-cycle-next-pr owner/repo 115 116 117 108 109 110 111 120
+# Usage: stack-cycle-next-pr [-r REPO] <PR_NUMBER...> [--json]
+# Example: stack-cycle-next-pr -r owner/repo 115 116 117 108 109 110 111 120
+#          stack-cycle-next-pr 115 116 117  # REPO derived from cwd
+#
+# -r/REPO is optional: if not given, it's derived from the current
+# directory's GitHub remote instead.
 #
 # PR numbers may also be piped on stdin (one per line), e.g.:
-#   analyze-pr-stack owner/repo 110 --json | jq -r '.stack[]' | stack-cycle-next-pr owner/repo --json
+#   analyze-pr-stack -r owner/repo 110 --json | jq -r '.stack[]' | stack-cycle-next-pr -r owner/repo --json
 #
 # A PR is SKIP if it has a sentinel review (Copilot found no new comments)
 # AND no commits since that review changed any PR file. Otherwise PROCESS.
@@ -31,8 +35,35 @@
 
 set -e
 
-REPO="$1"
-shift || true
+# Parse -r REPO, which may appear anywhere among the PR numbers/--json -
+# plain getopts stops at the first non-option arg, so this loop re-invokes
+# it after setting aside each remaining token in turn.
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 2 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 2 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
+
+if [[ -z "$REPO" ]]; then
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 2
+  fi
+fi
 
 OUTPUT_FORMAT="text"
 PR_NUMBERS=()
@@ -51,9 +82,9 @@ if [[ ${#PR_NUMBERS[@]} -eq 0 ]] && [[ ! -t 0 ]]; then
   done
 fi
 
-if [[ -z "$REPO" ]] || [[ ${#PR_NUMBERS[@]} -eq 0 ]]; then
-  echo "Usage: stack-cycle-next-pr <REPO> <PR_NUMBER...> [--json]" >&2
-  echo "Example: stack-cycle-next-pr owner/repo 115 116 117 108 109 110 111 120" >&2
+if [[ ${#PR_NUMBERS[@]} -eq 0 ]]; then
+  echo "Usage: stack-cycle-next-pr [-r REPO] <PR_NUMBER...> [--json]" >&2
+  echo "Example: stack-cycle-next-pr -r owner/repo 115 116 117 108 109 110 111 120" >&2
   exit 2
 fi
 
@@ -61,7 +92,7 @@ SKIP=()
 PROCESS=()
 
 for PR in "${PR_NUMBERS[@]}"; do
-  REVIEW_ID=$(latest-copilot-review-id "$REPO" "$PR" 2>/dev/null || true)
+  REVIEW_ID=$(latest-copilot-review-id -r "$REPO" "$PR" 2>/dev/null || true)
 
   if [[ -z "$REVIEW_ID" ]]; then
     # No Copilot review yet at all: needs processing.
@@ -69,8 +100,8 @@ for PR in "${PR_NUMBERS[@]}"; do
     continue
   fi
 
-  if is-sentinel-review "$REPO" "$PR" "$REVIEW_ID" 2>/dev/null; then
-    if has-post-sentinel-commits "$REPO" "$PR" 2>/dev/null; then
+  if is-sentinel-review -r "$REPO" "$PR" "$REVIEW_ID" 2>/dev/null; then
+    if has-post-sentinel-commits -r "$REPO" "$PR" 2>/dev/null; then
       # Sentinel review, but new commits landed since: stale, needs processing.
       PROCESS+=("$PR")
     else

@@ -5,9 +5,12 @@
 # Fetches the head branch name from GitHub for a given PR and checks it out
 # locally. Useful for switching to a PR's branch for testing or review.
 #
-# Usage: checkout-pr-branch <REPO> <PR_NUMBER>
-# Example: checkout-pr-branch owner/repo 116
-#          checkout-pr-branch owner/repo 116
+# Usage: checkout-pr-branch [-r REPO] <PR_NUMBER>
+# Example: checkout-pr-branch -r owner/repo 116
+#          checkout-pr-branch 116  # REPO derived from cwd
+#
+# -r/REPO is optional: if not given, it's derived from the current
+# directory's GitHub remote instead.
 #
 # Exit codes:
 #   0 = Successfully checked out branch
@@ -19,14 +22,39 @@
 
 set -e
 
-# Arguments
-REPO="$1"
-PR_NUMBER="$2"
+# Arguments: -r/REPO is optional (see header comment above).
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 3 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 3 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
+
+if [[ -z "$REPO" ]]; then
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 3
+  fi
+fi
+PR_NUMBER="$1"
 
 # Validation
-if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
-  echo "Usage: checkout-pr-branch <REPO> <PR_NUMBER>" >&2
-  echo "Example: checkout-pr-branch owner/repo 116" >&2
+if [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: checkout-pr-branch [-r REPO] <PR_NUMBER>" >&2
+  echo "Example: checkout-pr-branch -r owner/repo 116" >&2
   exit 3
 fi
 

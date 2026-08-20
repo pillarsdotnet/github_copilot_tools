@@ -50,15 +50,16 @@ which copilot-reviews
 ### 1. `copilot-reviews` - List open Copilot reviews
 
 Get all unhidden GitHub Copilot reviews on a PR with their IDs and content.
+-r/REPO is optional; if omitted it's derived from the cwd's GitHub remote via `gh repo view`.
 
 ```bash
-copilot-reviews <REPO> <PR_NUMBER>
+copilot-reviews [-r REPO] <PR_NUMBER>
 ```
 
 **Examples:**
 ```bash
-copilot-reviews owner/repo 116
-copilot-reviews owner/repo 116
+copilot-reviews -r owner/repo 116
+copilot-reviews 116  # REPO derived from cwd
 ```
 
 **Output:** JSON array with review metadata
@@ -75,15 +76,16 @@ copilot-reviews owner/repo 116
 ### 2. `open-review-threads` - List unresolved review threads
 
 Get all unresolved review threads (inline code comments) on a PR.
+-r/REPO is optional; if omitted it's derived from the cwd's GitHub remote via `gh repo view`.
 
 ```bash
-open-review-threads <REPO> <PR_NUMBER>
+open-review-threads [-r REPO] <PR_NUMBER>
 ```
 
 **Examples:**
 ```bash
-open-review-threads owner/repo 116
-open-review-threads owner/repo 116
+open-review-threads -r owner/repo 116
+open-review-threads 116  # REPO derived from cwd
 ```
 
 **Output:** JSON array with thread details
@@ -102,15 +104,16 @@ open-review-threads owner/repo 116
 ### 3. `resolve-pr-review-threads` - Resolve all open threads
 
 Resolve all currently unresolved review threads on a PR using GraphQL.
+-r/REPO is optional; if omitted it's derived from the cwd's GitHub remote via `gh repo view`.
 
 ```bash
-resolve-pr-review-threads <REPO> <PR_NUMBER>
+resolve-pr-review-threads [-r REPO] <PR_NUMBER>
 ```
 
 **Examples:**
 ```bash
-resolve-pr-review-threads owner/repo 116
-resolve-pr-review-threads owner/repo 116
+resolve-pr-review-threads -r owner/repo 116
+resolve-pr-review-threads 116  # REPO derived from cwd
 ```
 
 **Output:**
@@ -141,16 +144,17 @@ Failed:    0
 ### 4. `hide-pr-review` - Hide a review as resolved
 
 Hide an open review by database ID with an optional custom reason.
+-r/REPO is optional; if omitted it's derived from the cwd's GitHub remote via `gh repo view`.
 
 ```bash
-hide-pr-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID> [REASON]
+hide-pr-review [-r REPO] <PR_NUMBER> <REVIEW_DATABASE_ID> [REASON]
 ```
 
 **Examples:**
 ```bash
-hide-pr-review owner/repo 116 4964619882              # Uses reason "Resolved"
-hide-pr-review owner/repo 116 4964619882             # Uses reason "Resolved"
-hide-pr-review owner/repo 116 4964619882 "Addressed" # Custom reason
+hide-pr-review -r owner/repo 116 4964619882           # Uses reason "Resolved"
+hide-pr-review 116 4964619882                        # REPO derived from cwd
+hide-pr-review -r owner/repo 116 4964619882 "Addressed" # Custom reason
 ```
 
 **Output:**
@@ -167,15 +171,16 @@ hide-pr-review owner/repo 116 4964619882 "Addressed" # Custom reason
 ### 5. `latest-copilot-review-id` - Get latest review ID
 
 Find the database ID of the most recent Copilot review on a PR.
+-r/REPO is optional; if omitted it's derived from the cwd's GitHub remote via `gh repo view`.
 
 ```bash
-latest-copilot-review-id <REPO> <PR_NUMBER>
+latest-copilot-review-id [-r REPO] <PR_NUMBER>
 ```
 
 **Examples:**
 ```bash
-latest-copilot-review-id owner/repo 116
-latest-copilot-review-id owner/repo 116
+latest-copilot-review-id -r owner/repo 116
+latest-copilot-review-id 116  # REPO derived from cwd
 ```
 
 **Output:** Just the database ID (suitable for piping)
@@ -185,7 +190,7 @@ latest-copilot-review-id owner/repo 116
 
 **Piping example:**
 ```bash
-hide-pr-review owner/repo 116 $(latest-copilot-review-id owner/repo 116) "Resolved"
+hide-pr-review -r owner/repo 116 $(latest-copilot-review-id -r owner/repo 116) "Resolved"
 ```
 
 ---
@@ -193,16 +198,17 @@ hide-pr-review owner/repo 116 $(latest-copilot-review-id owner/repo 116) "Resolv
 ### 6. `review-database-ids` - Get all review database IDs
 
 Extract all database IDs from Copilot reviews on a PR, one per line. Useful for
-piping to other commands or looping over reviews.
+piping to other commands or looping over reviews. REPO is optional; if
+omitted it's derived from the cwd's GitHub remote.
 
 ```bash
-review-database-ids <REPO> <PR_NUMBER>
+review-database-ids [-r REPO] <PR_NUMBER>
 ```
 
 **Examples:**
 ```bash
-review-database-ids owner/repo 116
-review-database-ids owner/repo 116
+review-database-ids -r owner/repo 116
+review-database-ids 116  # REPO derived from cwd
 ```
 
 **Output:** One databaseId per line
@@ -217,21 +223,21 @@ review-database-ids owner/repo 116
 **Piping examples:**
 ```bash
 # Count reviews
-review-database-ids owner/repo 116 | wc -l
+review-database-ids -r owner/repo 116 | wc -l
 
 # Loop over review IDs
-review-database-ids owner/repo 116 | while read id; do
-  hide-pr-review owner/repo 116 "$id"
+review-database-ids -r owner/repo 116 | while read id; do
+  hide-pr-review -r owner/repo 116 "$id"
 done
 
 # Store in bash array
-mapfile -t REVIEW_IDS < <(review-database-ids owner/repo 116)
+mapfile -t REVIEW_IDS < <(review-database-ids -r owner/repo 116)
 for id in "${REVIEW_IDS[@]}"; do
   echo "Review: $id"
 done
 
 # Combine with other operations
-review-database-ids owner/repo 116 | head -1 | xargs -I {} hide-pr-review owner/repo 116 {}
+review-database-ids -r owner/repo 116 | head -1 | xargs -I {} hide-pr-review -r owner/repo 116 {}
 ```
 
 **Exit codes:**
@@ -246,16 +252,17 @@ Check if a Copilot review is NOT a sentinel (still has outstanding comments).
 
 A sentinel review contains "generated no new comments", indicating Copilot found
 no new issues. This script returns 0 if the review is NOT a sentinel (still has
-comments that need addressing).
+comments that need addressing). REPO is optional; if omitted it's derived
+from the cwd's GitHub remote.
 
 ```bash
-not-sentinel-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID>
+not-sentinel-review [-r REPO] <PR_NUMBER> <REVIEW_DATABASE_ID>
 ```
 
 **Examples:**
 ```bash
-not-sentinel-review owner/repo 116 4964619882
-if not-sentinel-review owner/repo 116 $(latest-copilot-review-id owner/repo 116); then
+not-sentinel-review -r owner/repo 116 4964619882
+if not-sentinel-review -r owner/repo 116 $(latest-copilot-review-id -r owner/repo 116); then
   echo "Review has outstanding comments that need fixing"
 fi
 ```
@@ -270,15 +277,16 @@ fi
 ### 8. `has-post-sentinel-commits` - Check for new commits after review
 
 Check if any commits after the latest Copilot review modified files changed by the PR.
+-r/REPO is optional; if omitted it's derived from the cwd's GitHub remote via `gh repo view`.
 
 ```bash
-has-post-sentinel-commits <REPO> <PR_NUMBER>
+has-post-sentinel-commits [-r REPO] <PR_NUMBER>
 ```
 
 **Examples:**
 ```bash
-has-post-sentinel-commits owner/repo 116
-if ! has-post-sentinel-commits owner/repo 116; then
+has-post-sentinel-commits -r owner/repo 116
+if ! has-post-sentinel-commits -r owner/repo 116; then
   echo "No new commits after review"
 fi
 ```
@@ -292,19 +300,34 @@ fi
 ### 9. `latest-ci-result` - Fetch the latest CI result
 
 Get the most recent CI/workflow run status for a repository or specific PR.
+-r/REPO is optional; if omitted it's derived from the cwd's GitHub remote via `gh repo view`.
+Optionally pin the result to a specific workflow via `WORKFLOW` - if a repo
+runs more than one workflow on the same branch (e.g. a "Code checker" CI
+workflow alongside an unrelated "Running Copilot Code Review" workflow),
+"most recent run" can silently mean the wrong one and report a false
+positive/negative. Pass `WORKFLOW` (and `""` for PR_NUMBER if omitting it)
+whenever the repo has more than one workflow that could run on a branch.
 
 ```bash
-latest-ci-result <REPO> [PR_NUMBER]
+latest-ci-result [-r REPO] [PR_NUMBER] [WORKFLOW]
 ```
 
 **Examples:**
 ```bash
 # Latest run across all branches
-latest-ci-result owner/repo
+latest-ci-result -r owner/repo
 
 # Latest run for a specific PR
-latest-ci-result owner/repo 116
-latest-ci-result owner/repo 116
+latest-ci-result -r owner/repo 116
+
+# REPO derived from cwd's GitHub remote
+latest-ci-result 116
+
+# Latest run of a specific workflow for a specific PR
+latest-ci-result -r owner/repo 116 "Code checker"
+
+# Latest run of a specific workflow, no PR filter
+latest-ci-result -r owner/repo "" "Code checker"
 ```
 
 **Output:** JSON with workflow run details
@@ -328,14 +351,14 @@ latest-ci-result owner/repo 116
 **Usage in scripts:**
 ```bash
 # Check if latest run passed
-if latest-ci-result owner/repo 116 > /dev/null; then
+if latest-ci-result -r owner/repo 116 > /dev/null; then
   echo "CI passed, safe to merge"
 else
   echo "CI failed, needs fixes"
 fi
 
 # Get detailed status
-latest-ci-result owner/repo 116 | jq '.conclusion'
+latest-ci-result -r owner/repo 116 | jq '.conclusion'
 ```
 
 ---
@@ -343,15 +366,16 @@ latest-ci-result owner/repo 116 | jq '.conclusion'
 ### 10. `checkout-pr-branch` - Checkout the branch for a PR
 
 Switch to the local branch corresponding to a given PR.
+-r/REPO is optional; if omitted it's derived from the cwd's GitHub remote via `gh repo view`.
 
 ```bash
-checkout-pr-branch <REPO> <PR_NUMBER>
+checkout-pr-branch [-r REPO] <PR_NUMBER>
 ```
 
 **Examples:**
 ```bash
-checkout-pr-branch owner/repo 116
-checkout-pr-branch owner/repo 116
+checkout-pr-branch -r owner/repo 116
+checkout-pr-branch 116  # REPO derived from cwd
 ```
 
 **Output:**
@@ -370,16 +394,16 @@ checkout-pr-branch owner/repo 116
 **Usage examples:**
 ```bash
 # Switch to PR branch and review
-checkout-pr-branch owner/repo 116
+checkout-pr-branch -r owner/repo 116
 git log --oneline -10
 git diff origin/main
 
 # Switch to PR and check status
-checkout-pr-branch owner/repo 116 && git status
+checkout-pr-branch -r owner/repo 116 && git status
 
 # Loop through multiple PRs
 for pr in 115 116 117; do
-  checkout-pr-branch owner/repo $pr
+  checkout-pr-branch -r owner/repo $pr
   echo "PR #$pr:"
   git log -1 --oneline
 done
@@ -452,18 +476,19 @@ Check if a new Copilot review is needed based on whether all previous reviews ar
 resolved and new files have been changed.
 
 ```bash
-refresh-needed <REPO> <PR_NUMBER> <FILES_CHANGED_COUNT>
+refresh-needed [-r REPO] <PR_NUMBER> <FILES_CHANGED_COUNT>
 ```
 
 **Arguments:**
-- `REPO` - Repository in format `owner/repo-name`
+- `-r REPO` - Repository in format `owner/repo-name` (optional; if omitted
+  it's derived from the cwd's GitHub remote)
 - `PR_NUMBER` - Pull request number
 - `FILES_CHANGED_COUNT` - Number of files changed since last review (typically from `check-changed-files`)
 
 **Examples:**
 ```bash
-refresh-needed owner/repo 116 3
-refresh-needed owner/repo 42 0
+refresh-needed -r owner/repo 116 3
+refresh-needed 116 3  # REPO derived from cwd
 ```
 
 **Output:**
@@ -487,15 +512,15 @@ or
 ```bash
 # Check if review refresh is needed
 CHANGED=$(check-changed-files origin/main HEAD)
-if refresh-needed owner/repo 116 "$CHANGED"; then
+if refresh-needed -r owner/repo 116 "$CHANGED"; then
   echo "✓ Ready to request new Copilot review"
-  request-copilot-review owner/repo 116
+  request-pr-review -r owner/repo 116
 else
   echo "✗ Address outstanding comments before requesting new review"
 fi
 
 # Combine with other workflow steps
-if refresh-needed "$REPO" "$PR" 0; then
+if refresh-needed -r "$REPO" "$PR" 0; then
   echo "No files changed but all reviews are resolved"
 fi
 ```
@@ -508,16 +533,17 @@ Given any PR number in a stack, walks down through base branches to find the
 root (base = default branch), then walks up through head branches to find
 every PR chained on top of it. Handles GitHub's automatic base-retargeting
 after a PR merges (which can otherwise obscure the chain), and reports which
-PRs are still open vs. already closed/merged.
+PRs are still open vs. already closed/merged. REPO is optional; if omitted
+it's derived from the cwd's GitHub remote.
 
 ```bash
-analyze-pr-stack <REPO> <PR_NUMBER> [--json]
+analyze-pr-stack [-r REPO] <PR_NUMBER> [--json]
 ```
 
 **Examples:**
 ```bash
-analyze-pr-stack owner/repo 110
-analyze-pr-stack owner/repo 110 --json
+analyze-pr-stack -r owner/repo 110
+analyze-pr-stack 110 --json  # REPO derived from cwd
 ```
 
 **Output (text):** Indented tree from the default branch to the top PR,
@@ -545,7 +571,7 @@ marking closed/merged PRs as `(state, skip)`.
 **Usage in scripts:**
 ```bash
 # Feed the live open stack straight into stack-cycle-next-pr
-analyze-pr-stack owner/repo 110 --json | jq -r '.stack[]' | stack-cycle-next-pr owner/repo --json
+analyze-pr-stack -r owner/repo 110 --json | jq -r '.stack[]' | stack-cycle-next-pr -r owner/repo --json
 ```
 
 ---
@@ -556,16 +582,17 @@ Combines suppressed comments (parsed out of Copilot review bodies) with open
 review threads, and tags each with a best-guess concern category (bug,
 style, documentation, performance, scope, testing) by keyword matching.
 Surfaces suppressed comments prominently since Copilot hides them by default
-but they still represent real concerns that must be remediated.
+but they still represent real concerns that must be remediated. REPO is
+optional; if omitted it's derived from the cwd's GitHub remote.
 
 ```bash
-categorize-pr-reviews <REPO> <PR_NUMBER> [--json]
+categorize-pr-reviews [-r REPO] <PR_NUMBER> [--json]
 ```
 
 **Examples:**
 ```bash
-categorize-pr-reviews owner/repo 117
-categorize-pr-reviews owner/repo 117 --json
+categorize-pr-reviews -r owner/repo 117
+categorize-pr-reviews 117 --json  # REPO derived from cwd
 ```
 
 **Output (--json):**
@@ -601,23 +628,24 @@ how to remediate.
 Given an ordered PR stack, checks each PR's latest Copilot review with
 `is-sentinel-review` and `has-post-sentinel-commits` to decide whether it's
 already stable (skip) or needs another pass (process). Automates the manual
-"cycle back through the stack" bookkeeping.
+"cycle back through the stack" bookkeeping. REPO is optional; if omitted
+it's derived from the cwd's GitHub remote.
 
 ```bash
-stack-cycle-next-pr <REPO> <PR_NUMBER...> [--json]
+stack-cycle-next-pr [-r REPO] <PR_NUMBER...> [--json]
 ```
 
 PR numbers may also be piped on stdin, one per line—handy for chaining
 directly off `analyze-pr-stack`:
 
 ```bash
-analyze-pr-stack owner/repo 110 --json | jq -r '.stack[]' | stack-cycle-next-pr owner/repo --json
+analyze-pr-stack -r owner/repo 110 --json | jq -r '.stack[]' | stack-cycle-next-pr -r owner/repo --json
 ```
 
 **Examples:**
 ```bash
-stack-cycle-next-pr owner/repo 115 116 117 108 109 110 111 120
-stack-cycle-next-pr owner/repo 115 116 117 108 109 110 111 120 --json
+stack-cycle-next-pr -r owner/repo 115 116 117 108 109 110 111 120
+stack-cycle-next-pr -r owner/repo 115 116 117 108 109 110 111 120 --json
 ```
 
 **Output (--json):**
@@ -677,16 +705,18 @@ after reviewing the result.
 **IMPORTANT:** Never force-push if the script exits with code 3 or 6.
 Instead, inspect the diagnostic output and decide whether to (a) rebase manually,
 (b) delete the local branches and try again, or (c) mark the PR as requiring
-special handling.
+special handling. REPO is optional; if omitted it's derived from the cwd's
+GitHub remote.
 
 ```bash
-auto-rebase-pr <REPO> <PR_NUMBER> [--push] [--force]
+auto-rebase-pr [-r REPO] <PR_NUMBER> [--push] [--force]
 ```
 
 **Examples:**
 ```bash
-auto-rebase-pr owner/repo 116          # prepare locally, print the push command
-auto-rebase-pr owner/repo 116 --push   # prepare and force-push the result
+auto-rebase-pr -r owner/repo 116          # prepare locally, print the push command
+auto-rebase-pr -r owner/repo 116 --push   # prepare and force-push the result
+auto-rebase-pr 116 --push                 # REPO derived from cwd
 ```
 
 **Exit codes:**
@@ -717,16 +747,17 @@ verbatim—review/amend it to conform to conventional-commits before pushing.
 Forcibly remove GitHub Copilot from the PR's reviewers, then immediately re-add it.
 This works around issues where the standard "request review" button in the GitHub UI
 fails silently or doesn't trigger a new review. By removing and re-adding Copilot,
-you force GitHub to send a fresh review request.
+you force GitHub to send a fresh review request. REPO is optional; if
+omitted it's derived from the cwd's GitHub remote.
 
 ```bash
-reset-copilot-reviewer <REPO> <PR_NUMBER>
+reset-copilot-reviewer [-r REPO] <PR_NUMBER>
 ```
 
 **Examples:**
 ```bash
-reset-copilot-reviewer owner/repo 116
-reset-copilot-reviewer owner/other-repo 42
+reset-copilot-reviewer -r owner/repo 116
+reset-copilot-reviewer 116  # REPO derived from cwd
 ```
 
 **Output:**
@@ -773,14 +804,22 @@ are frequently "UNKNOWN STEP" due to a `gh` limitation), and `--log-failed`
 log content (pre-commit hook id/exit code extraction, generic error-pattern
 matching for test/git/external-dependency failures).
 
+`WORKFLOW` is forwarded straight to `latest-ci-result` to pin the run to a
+specific workflow - pass it whenever the repo has more than one workflow
+that could run on a branch (see `latest-ci-result` above for why). REPO is
+optional; if omitted it's derived from the cwd's GitHub remote.
+
 ```bash
-analyze-ci-failures <REPO> <PR_NUMBER> [--json]
+analyze-ci-failures [-r REPO] <PR_NUMBER> [WORKFLOW] [--json]
 ```
 
 **Examples:**
 ```bash
-analyze-ci-failures mge0/DevOps 149
-analyze-ci-failures mge0/DevOps 149 --json
+analyze-ci-failures -r mge0/DevOps 149
+analyze-ci-failures -r mge0/DevOps 149 --json
+analyze-ci-failures -r mge0/DevOps 149 "Code checker"
+analyze-ci-failures 149 "Code checker"  # REPO derived from cwd
+analyze-ci-failures -r mge0/DevOps 149 "Code checker" --json
 ```
 
 **Output (--json):**
@@ -865,7 +904,7 @@ PR=116
 CHANGED_FILES=$(check-changed-files origin/main HEAD)
 
 # Check if new review should be requested
-if refresh-needed "$REPO" "$PR" "$CHANGED_FILES"; then
+if refresh-needed -r "$REPO" "$PR" "$CHANGED_FILES"; then
   echo "✓ All reviews resolved and new files changed"
   echo "  Ready to request new Copilot review"
 else
@@ -882,18 +921,22 @@ REPO="owner/repo"
 PR=116
 
 echo "=== Open Copilot Reviews ==="
-copilot-reviews "$REPO" "$PR" | jq '.body' | head -20
+copilot-reviews -r "$REPO" "$PR" | jq '.body' | head -20
 
 echo ""
 echo "=== Unresolved Review Threads ==="
-open-review-threads "$REPO" "$PR" | jq '.[] | "\(.path):\(.line): \(.body)"'
+open-review-threads -r "$REPO" "$PR" | jq '.[] | "\(.path):\(.line): \(.body)"'
 ```
 
 ---
 
 ## Repository Parameter
 
-All scripts require the repository in format `owner/repo-name` as the first parameter.
+Every script that talks to a specific PR accepts an optional `-r REPO` flag
+(`owner/repo-name` format), which may appear before or after the other
+arguments. When `-r` is omitted, REPO is derived from the current
+directory's GitHub remote via `gh repo view` - so scripts run from inside
+a repo checkout usually don't need `-r` at all.
 
 ---
 
@@ -952,8 +995,8 @@ copilot-reviews 116
 open-review-threads 116
 latest-copilot-review-id 116
 
-# Test with a different repo
-copilot-reviews 42 owner/other-repo
+# Test with a different repo (-r may appear anywhere in argv)
+copilot-reviews 42 -r owner/other-repo
 ```
 
 ### Contributing

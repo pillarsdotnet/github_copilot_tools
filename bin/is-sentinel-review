@@ -5,8 +5,12 @@
 # A sentinel review contains "generated no new comments", meaning Copilot
 # found no new issues to report. This is the opposite of not-sentinel-review.
 #
-# Usage: is-sentinel-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID>
-# Example: is-sentinel-review owner/repo 116 4964619882
+# Usage: is-sentinel-review [-r REPO] <PR_NUMBER> <REVIEW_DATABASE_ID>
+# Example: is-sentinel-review -r owner/repo 116 4964619882
+#          is-sentinel-review 116 4964619882  # REPO derived from cwd
+#
+# -r/REPO is optional: if not given, it's derived from the current
+# directory's GitHub remote instead.
 #
 # Exit codes:
 #   0 = Review IS a sentinel (no new comments found)
@@ -16,18 +20,43 @@
 
 set -e
 
-REPO="$1"
-PR_NUMBER="$2"
-REVIEW_ID="$3"
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 2 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 2 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
 
-if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]] || [[ -z "$REVIEW_ID" ]]; then
-  echo "Usage: is-sentinel-review <REPO> <PR_NUMBER> <REVIEW_DATABASE_ID>" >&2
-  echo "Example: is-sentinel-review owner/repo 116 4964619882" >&2
+if [[ -z "$REPO" ]]; then
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 2
+  fi
+fi
+PR_NUMBER="$1"
+REVIEW_ID="$2"
+
+if [[ -z "$PR_NUMBER" ]] || [[ -z "$REVIEW_ID" ]]; then
+  echo "Usage: is-sentinel-review [-r REPO] <PR_NUMBER> <REVIEW_DATABASE_ID>" >&2
+  echo "Example: is-sentinel-review -r owner/repo 116 4964619882" >&2
   exit 2
 fi
 
 # Use not-sentinel-review and invert the exit code
-if not-sentinel-review "$REPO" "$PR_NUMBER" "$REVIEW_ID" 2>/dev/null; then
+if not-sentinel-review -r "$REPO" "$PR_NUMBER" "$REVIEW_ID" 2>/dev/null; then
   # not-sentinel-review returned 0 (is NOT a sentinel)
   exit 1
 else

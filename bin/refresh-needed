@@ -18,25 +18,53 @@
 # Note: There should be at most one sentinel review per PR. Sentinel reviews
 # represent a "clean" checkpoint and become outdated if new changes are made.
 #
-# Usage: refresh-needed <REPO> <PR_NUMBER> <FILES_CHANGED_COUNT>
-# Example: refresh-needed owner/repo 116 3
+# Usage: refresh-needed [-r REPO] <PR_NUMBER> <FILES_CHANGED_COUNT>
+# Example: refresh-needed -r owner/repo 116 3
+#          refresh-needed 116 3  # REPO derived from cwd
 #
 # Arguments:
-#   REPO                 Repository in format owner/repo-name
+#   -r REPO               Repository in format owner/repo-name (optional; if
+#                          not given, it's derived from the cwd's GitHub
+#                          remote instead)
 #   PR_NUMBER            Pull request number
 #   FILES_CHANGED_COUNT  Number of files changed since last review (from check-changed-files)
 #
 
 set -e
 
-REPO="$1"
-PR_NUM="$2"
-FILES_CHANGED="$3"
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 1 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 1 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
+
+if [[ -z "$REPO" ]]; then
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 1
+  fi
+fi
+PR_NUM="$1"
+FILES_CHANGED="$2"
 
 # Validation
-if [[ -z "$REPO" ]] || [[ -z "$PR_NUM" ]] || [[ -z "$FILES_CHANGED" ]]; then
-  echo "Usage: refresh-needed <REPO> <PR_NUMBER> <FILES_CHANGED_COUNT>" >&2
-  echo "Example: refresh-needed owner/repo 116 3" >&2
+if [[ -z "$PR_NUM" ]] || [[ -z "$FILES_CHANGED" ]]; then
+  echo "Usage: refresh-needed [-r REPO] <PR_NUMBER> <FILES_CHANGED_COUNT>" >&2
+  echo "Example: refresh-needed -r owner/repo 116 3" >&2
   exit 1
 fi
 
@@ -49,7 +77,7 @@ fi
 echo "════════════════════════════════════════════════════════════════"
 echo "  Step 1: Resolve open review threads"
 echo "════════════════════════════════════════════════════════════════"
-resolve-pr-review-threads "$REPO" "$PR_NUM" || true
+resolve-pr-review-threads -r "$REPO" "$PR_NUM" || true
 echo ""
 
 echo "════════════════════════════════════════════════════════════════"
@@ -62,18 +90,18 @@ if [[ -z "$REPO_NAME" ]]; then
   exit 1
 fi
 
-REVIEW_IDS=$(review-database-ids "$REPO" "$PR_NUM" 2>/dev/null || echo "")
+REVIEW_IDS=$(review-database-ids -r "$REPO" "$PR_NUM" 2>/dev/null || echo "")
 HIDDEN_COUNT=0
 SKIPPED_COUNT=0
 
 for ID in $REVIEW_IDS; do
   # Check if this is a sentinel review
-  if is-sentinel-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
+  if is-sentinel-review -r "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
     # This IS a sentinel review
     if (( FILES_CHANGED )); then
       # Sentinel reviews become outdated when new changes are made
       echo "Hiding outdated sentinel review $ID..."
-      hide-pr-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null || true
+      hide-pr-review -r "$REPO" "$PR_NUM" "$ID" 2>/dev/null || true
       HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
     else
       # No changes; keep the sentinel review as a checkpoint
@@ -83,7 +111,7 @@ for ID in $REVIEW_IDS; do
   else
     # This is NOT a sentinel—it has actionable comments
     echo "Hiding review $ID (outstanding comments)..."
-    hide-pr-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null || true
+    hide-pr-review -r "$REPO" "$PR_NUM" "$ID" 2>/dev/null || true
     HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
   fi
 done
@@ -107,7 +135,7 @@ echo "════════════════════════�
 
 ALL_SENTINEL=1
 for ID in $REVIEW_IDS; do
-  if ! is-sentinel-review "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
+  if ! is-sentinel-review -r "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
     # Review is NOT a sentinel (has outstanding comments)
     ALL_SENTINEL=0
     break

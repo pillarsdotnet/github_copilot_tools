@@ -8,8 +8,12 @@
 # PRs are used as connectors (a later PR may be based on a now-merged PR's
 # branch) but are excluded from the "stack" (open, needs-processing) list.
 #
-# Usage: analyze-pr-stack <REPO> <PR_NUMBER> [--json]
-# Example: analyze-pr-stack owner/repo 110
+# Usage: analyze-pr-stack [-r REPO] <PR_NUMBER> [--json]
+# Example: analyze-pr-stack -r owner/repo 110
+#          analyze-pr-stack 110  # REPO derived from cwd's GitHub remote
+#
+# -r/REPO is optional: if not given, it's derived from the current
+# directory's GitHub remote instead.
 #
 # Output (text): an indented tree from the default branch to the top PR.
 # Output (--json):
@@ -29,17 +33,42 @@
 
 set -e
 
-REPO="$1"
-PR_NUMBER="$2"
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 1 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 1 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
+
+if [[ -z "$REPO" ]]; then
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 1
+  fi
+fi
+PR_NUMBER="$1"
 OUTPUT_FORMAT="text"
 
-if [[ "$3" == "--json" ]]; then
+if [[ "$2" == "--json" ]]; then
   OUTPUT_FORMAT="json"
 fi
 
-if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
-  echo "Usage: analyze-pr-stack <REPO> <PR_NUMBER> [--json]" >&2
-  echo "Example: analyze-pr-stack owner/repo 110" >&2
+if [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: analyze-pr-stack [-r REPO] <PR_NUMBER> [--json]" >&2
+  echo "Example: analyze-pr-stack -r owner/repo 110" >&2
   exit 1
 fi
 

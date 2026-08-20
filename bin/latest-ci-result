@@ -3,11 +3,24 @@
 # Fetch the latest CI result for a repository or pull request.
 #
 # Queries GitHub Actions workflow runs and displays the status of the most
-# recent run. Can filter by PR number or show the latest run across all branches.
+# recent run. Can filter by PR number or show the latest run across all
+# branches. A repo with more than one workflow (e.g. a "Code checker" CI
+# workflow alongside an unrelated "Running Copilot Code Review" workflow)
+# can have a newer run of the WRONG workflow land on top of the one that
+# actually matters - pass WORKFLOW to pin the result to a specific
+# workflow and avoid that false positive/negative.
 #
-# Usage: latest-ci-result <REPO> [PR_NUMBER]
-# Example: latest-ci-result owner/repo
-#          latest-ci-result owner/repo 116
+# Usage: latest-ci-result [-r REPO] [PR_NUMBER] [WORKFLOW]
+# Example: latest-ci-result -r owner/repo
+#          latest-ci-result -r owner/repo 116
+#          latest-ci-result -r owner/repo 116 "Code checker"
+#          latest-ci-result -r owner/repo "" "Code checker"
+#          latest-ci-result 116                     # REPO derived from cwd
+#          latest-ci-result 116 -r owner/repo       # -r may follow positionals too
+#          latest-ci-result "" "Code checker"       # REPO derived from cwd
+#
+# -r/REPO is optional: if not given, it's derived from the current
+# directory's GitHub remote instead.
 #
 # Exit codes:
 #   0 = CI passed (success or skipped)
@@ -18,17 +31,37 @@
 
 set -e
 
-# Arguments
-REPO="$1"
-PR_NUMBER="${2:-}"
+# Parse -r REPO, which may appear before or after positional arguments -
+# plain getopts stops at the first non-option arg, so this loop re-invokes
+# it after setting aside each positional token in turn.
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 3 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 3 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
 
-# Validation
 if [[ -z "$REPO" ]]; then
-  echo "Usage: latest-ci-result <REPO> [PR_NUMBER]" >&2
-  echo "Example: latest-ci-result owner/repo" >&2
-  echo "         latest-ci-result owner/repo 116" >&2
-  exit 3
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 3
+  fi
 fi
+PR_NUMBER="${1:-}"
+WORKFLOW="${2:-}"
 
 # Parse repo
 IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
@@ -37,23 +70,32 @@ if [[ -z "$REPO_NAME" ]]; then
   exit 3
 fi
 
+WORKFLOW_ARGS=()
+[[ -n "$WORKFLOW" ]] && WORKFLOW_ARGS=(--workflow "$WORKFLOW")
+
 # Build gh command
 if [[ -n "$PR_NUMBER" ]]; then
-  # Get runs associated with a specific PR
+  # Get runs associated with a specific PR. --limit is widened past 1 here
+  # (unlike the other two branches below) because the displayTitle match is
+  # a client-side jq filter applied AFTER gh's --limit truncation - with
+  # --limit 1 this only ever checks the single most recent run in the whole
+  # repo/workflow, not the most recent run that's actually about this PR.
   RUN=$(gh run list \
     --repo "$REPO" \
-    --limit 1 \
+    "${WORKFLOW_ARGS[@]}" \
+    --limit 20 \
     --json databaseId,status,conclusion,name,headBranch,displayTitle \
-    --jq '.[] | select(.displayTitle | contains("#'$PR_NUMBER'")) | .' 2>/dev/null || true)
-  
+    --jq '[.[] | select(.displayTitle | contains("#'$PR_NUMBER'"))] | .[0] // empty' 2>/dev/null || true)
+
   if [[ -z "$RUN" ]]; then
     # Try alternative: fetch the PR's head branch and get latest run on that branch
     HEAD_BRANCH=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName --jq '.headRefName' 2>/dev/null || true)
-    
+
     if [[ -n "$HEAD_BRANCH" ]]; then
       RUN=$(gh run list \
         --repo "$REPO" \
         --branch "$HEAD_BRANCH" \
+        "${WORKFLOW_ARGS[@]}" \
         --limit 1 \
         --json databaseId,status,conclusion,name,headBranch,displayTitle \
         --jq '.[]' 2>/dev/null || true)
@@ -63,6 +105,7 @@ else
   # Get the latest run across all branches
   RUN=$(gh run list \
     --repo "$REPO" \
+    "${WORKFLOW_ARGS[@]}" \
     --limit 1 \
     --json databaseId,status,conclusion,name,headBranch,displayTitle \
     --jq '.[]' 2>/dev/null || true)
@@ -73,6 +116,9 @@ if [[ -z "$RUN" ]]; then
   echo "Error: No CI runs found for $REPO" >&2
   if [[ -n "$PR_NUMBER" ]]; then
     echo "       (PR #$PR_NUMBER)" >&2
+  fi
+  if [[ -n "$WORKFLOW" ]]; then
+    echo "       (workflow: $WORKFLOW)" >&2
   fi
   exit 2
 fi

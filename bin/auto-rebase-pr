@@ -14,11 +14,16 @@
 # pushing a shared branch is a hard-to-reverse action, so pass --push to
 # have this script do it; otherwise it prints the exact command to run.
 #
-# Usage: auto-rebase-pr <REPO> <PR_NUMBER> [--push] [--force]
-# Example: auto-rebase-pr owner/repo 116
-#          auto-rebase-pr owner/repo 116 --push
+# Usage: auto-rebase-pr [-r REPO] <PR_NUMBER> [--push] [--force]
+# Example: auto-rebase-pr -r owner/repo 116
+#          auto-rebase-pr -r owner/repo 116 --push
+#          auto-rebase-pr 116 --push  # REPO derived from cwd's GitHub remote
+#
+# -r/REPO is optional: if not given, it's derived from the current
+# directory's GitHub remote instead.
 #
 # Options:
+#   -r REPO  Repository in owner/repo format (may appear anywhere in argv)
 #   --push   Force-push the result to the PR's remote head branch
 #   --force  Overwrite a pre-existing local <HEAD>-clean branch, if any
 #
@@ -33,6 +38,28 @@
 
 set -e
 
+# Parse -r REPO, which may appear before or after positional/other flag
+# arguments - plain getopts stops at the first non-option arg, so this loop
+# re-invokes it after setting aside each remaining token in turn.
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 4 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 4 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
+
 PUSH=0
 FORCE=0
 ARGS=()
@@ -44,12 +71,18 @@ for ARG in "$@"; do
   esac
 done
 
-REPO="${ARGS[0]}"
-PR_NUMBER="${ARGS[1]}"
+if [[ -z "$REPO" ]]; then
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 4
+  fi
+fi
+PR_NUMBER="${ARGS[0]}"
 
-if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
-  echo "Usage: auto-rebase-pr <REPO> <PR_NUMBER> [--push] [--force]" >&2
-  echo "Example: auto-rebase-pr owner/repo 116" >&2
+if [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: auto-rebase-pr [-r REPO] <PR_NUMBER> [--push] [--force]" >&2
+  echo "Example: auto-rebase-pr -r owner/repo 116" >&2
   exit 4
 fi
 

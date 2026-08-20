@@ -3,8 +3,20 @@
 # Analyze the latest CI run for a PR and classify what failed, so the AI
 # doesn't have to read raw workflow logs to find and categorize errors.
 #
-# Usage: analyze-ci-failures <REPO> <PR_NUMBER> [--json]
-# Example: analyze-ci-failures mge0/DevOps 116
+# Usage: analyze-ci-failures [-r REPO] <PR_NUMBER> [WORKFLOW] [--json]
+# Example: analyze-ci-failures -r mge0/DevOps 116
+#          analyze-ci-failures -r mge0/DevOps 116 "Code checker"
+#          analyze-ci-failures -r mge0/DevOps 116 "Code checker" --json
+#          analyze-ci-failures 116 "Code checker"  # REPO derived from cwd
+#
+# -r/REPO is optional: if not given, it's derived from the current
+# directory's GitHub remote instead.
+#
+# WORKFLOW pins the result to a specific workflow's run - see
+# latest-ci-result for why this matters in a repo with more than one
+# workflow (e.g. a "Code checker" CI workflow next to an unrelated
+# "Running Copilot Code Review" workflow, where the latter can land more
+# recently and mask a real "Code checker" failure).
 #
 # Combines three sources per failed run:
 #   - latest-ci-result, to resolve the run (conclusion, databaseId)
@@ -43,18 +55,54 @@
 
 set -e
 
-REPO="$1"
-PR_NUMBER="$2"
-OUTPUT_FORMAT="text"
-[[ "$3" == "--json" ]] && OUTPUT_FORMAT="json"
+# Parse -r REPO, which may appear before or after positional arguments -
+# plain getopts stops at the first non-option arg, so this loop re-invokes
+# it after setting aside each positional token in turn.
+REPO=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -* && "$1" != --* ]]; then
+    OPTIND=1
+    getopts ":r:" OPT
+    case "$OPT" in
+      r) REPO="$OPTARG" ;;
+      :) echo "Error: -r requires an argument" >&2; exit 3 ;;
+      \?) echo "Error: unknown option -$OPTARG" >&2; exit 3 ;;
+    esac
+    shift $((OPTIND - 1))
+  else
+    POSITIONAL+=("$1")
+    shift
+  fi
+done
+set -- "${POSITIONAL[@]}"
 
-if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
-  echo "Usage: analyze-ci-failures <REPO> <PR_NUMBER> [--json]" >&2
-  echo "Example: analyze-ci-failures mge0/DevOps 116" >&2
+if [[ -z "$REPO" ]]; then
+  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$REPO" ]]; then
+    echo "Error: REPO not given (-r), and cwd is not a GitHub repo (run from inside a repo checkout, or pass -r REPO explicitly)" >&2
+    exit 3
+  fi
+fi
+PR_NUMBER="$1"
+OUTPUT_FORMAT="text"
+WORKFLOW=""
+
+if [[ "$2" == "--json" ]]; then
+  OUTPUT_FORMAT="json"
+elif [[ -n "$2" ]]; then
+  WORKFLOW="$2"
+  [[ "$3" == "--json" ]] && OUTPUT_FORMAT="json"
+fi
+
+if [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: analyze-ci-failures [-r REPO] <PR_NUMBER> [WORKFLOW] [--json]" >&2
+  echo "Example: analyze-ci-failures -r mge0/DevOps 116" >&2
+  echo "         analyze-ci-failures -r mge0/DevOps 116 \"Code checker\"" >&2
   exit 3
 fi
 
-RUN_JSON=$(latest-ci-result "$REPO" "$PR_NUMBER" 2>/dev/null || true)
+RUN_JSON=$(latest-ci-result -r "$REPO" "$PR_NUMBER" "$WORKFLOW" 2>/dev/null || true)
 if [[ -z "$RUN_JSON" ]]; then
   echo "Error: No CI run found for $REPO #$PR_NUMBER" >&2
   exit 2
