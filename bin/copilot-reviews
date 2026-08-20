@@ -20,21 +20,42 @@
 set -e
 
 REPO=""
+OUTPUT_FORMAT="text"  # default to human-readable text
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
-  if [[ "$1" == -* && "$1" != --* ]]; then
-    OPTIND=1
-    getopts ":r:" OPT
-    case "$OPT" in
-      r) REPO="$OPTARG" ;;
-      :) echo "Error: -r requires an argument" >&2; exit 1 ;;
-      \?) echo "Error: unknown option -$OPTARG" >&2; exit 1 ;;
-    esac
-    shift $((OPTIND - 1))
-  else
-    POSITIONAL+=("$1")
-    shift
-  fi
+  case "$1" in
+    -h|--help)
+      echo "Usage: copilot-reviews [-r REPO] <PR_NUMBER> [--json]"
+      echo "Example: copilot-reviews -r owner/repo 116"
+      echo "         copilot-reviews 116"
+      echo ""
+      echo "Options:"
+      echo "  -r REPO   Repository in owner/repo format"
+      echo "  --json    Output JSON objects (one per line)"
+      echo "  -h, --help Show this help text"
+      exit 0
+      ;;
+    -r)
+      if [[ -z "$2" ]]; then
+        echo "Error: -r requires an argument" >&2
+        exit 1
+      fi
+      REPO="$2"
+      shift 2
+      ;;
+    --json)
+      OUTPUT_FORMAT="json"
+      shift
+      ;;
+    -*)
+      echo "Error: unknown option $1" >&2
+      exit 1
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
 done
 set -- "${POSITIONAL[@]}"
 
@@ -46,12 +67,6 @@ if [[ -z "$REPO" ]]; then
   fi
 fi
 PR_NUMBER="$1"
-OUTPUT_FORMAT="text"  # default to human-readable text
-
-# Check for --json flag
-if [[ "$2" == "--json" ]]; then
-  OUTPUT_FORMAT="json"
-fi
 
 if [[ -z "$PR_NUMBER" ]]; then
   echo "Usage: copilot-reviews [-r REPO] <PR_NUMBER> [--json]" >&2
@@ -63,6 +78,11 @@ if [[ -z "$PR_NUMBER" ]]; then
   exit 1
 fi
 
+if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "Error: PR_NUMBER must be a number (e.g., 116)" >&2
+  exit 1
+fi
+
 IFS='/' read -r OWNER REPO_NAME <<< "$REPO"
 if [[ -z "$REPO_NAME" ]]; then
   echo "Error: REPO must be in format 'owner/name'" >&2
@@ -70,7 +90,7 @@ if [[ -z "$REPO_NAME" ]]; then
 fi
 
 # Fetch reviews
-REVIEWS=$(gh api graphql -f query="query {
+REVIEWS_JSON=$(gh api graphql -f query="query {
   repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
     pullRequest(number: $PR_NUMBER) {
       reviews(first: 100) {
@@ -88,7 +108,22 @@ REVIEWS=$(gh api graphql -f query="query {
       }
     }
   }
-}" 2>/dev/null | jq '.data.repository.pullRequest.reviews.edges[] | select(.node.author.login == "copilot-pull-request-reviewer" and (.node.isMinimized // false) == false) | {id: .node.id, databaseId: .node.databaseId, body: .node.body}')
+}" 2>/dev/null || true)
+
+if [[ -z "$REVIEWS_JSON" ]]; then
+  echo "Error: Failed to fetch reviews from GitHub API" >&2
+  exit 1
+fi
+
+REVIEWS=$(echo "$REVIEWS_JSON" | jq -c '
+  .data.repository.pullRequest.reviews.edges // []
+  | .[]
+  | select(
+      (.node.author.login | startswith("copilot-pull-request-reviewer"))
+      and ((.node.isMinimized // false) == false)
+    )
+  | {id: .node.id, databaseId: .node.databaseId, body: .node.body}
+')
 
 # Output based on format
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -96,5 +131,9 @@ if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   echo "$REVIEWS"
 else
   # Human-readable formatted text
-  echo "$REVIEWS" | jq -r '"Review #\(.databaseId):\n\(.body)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"'
+  if [[ -n "$REVIEWS" ]]; then
+    echo "$REVIEWS" | jq -r '"Review #\(.databaseId):\n\(.body)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"'
+  else
+    echo "No open Copilot reviews found."
+  fi
 fi
