@@ -451,9 +451,25 @@ plain rebase and a cherry-pick of the same commits hit the same conflicts
 works and falls through identically when it doesn't. Revisit the doc's
 wording if that assumption turns out wrong in practice.
 
-### Phase 3 (Failure Analysis - 2-3 days)
-6. `analyze-ci-failures` (supports fix-precommit-failures)
-7. `fix-precommit-failures` (low-hanging fruit)
+### Phase 3 (Failure Analysis - 2-3 days) — ✅ DONE (2026-08-20)
+6. ✅ `analyze-ci-failures` (supports fix-precommit-failures) — combines
+   `latest-ci-result`, `gh run view --json jobs` (accurate failed step
+   names), and `--log-failed` content parsing. Validated against real,
+   currently-failing CI runs across 6 live mge0/DevOps PRs: correctly
+   identified that all of them share one root cause (a `vale-sync`
+   pre-commit hook retried 3x per run), and correctly reported a passing
+   PR as "nothing to analyze."
+7. ✅ `fix-precommit-failures` (low-hanging fruit) — deviated from the
+   per-hook-name fixer-command lookup table this section originally
+   proposed. That approach is brittle (guesses a specific fixer invocation
+   per hook name) and silently wrong for a hook like `vale-sync`, whose
+   failure isn't a formatting issue at all. Runs `pre-commit run --all-files`
+   to convergence instead and reports whatever's still failing afterward.
+   Validated against a synthetic repo mixing an auto-fixable hook
+   (trailing-whitespace) with one that fails without ever modifying
+   anything: correctly converges the fixable one and reports the other for
+   AI attention, in both directions (nothing left to fix, and something
+   left to fix).
 
 ### Phase 4 (Remediation Support - 2-3 days)
 8. `remediation-strategies` (high utility, moderate complexity)

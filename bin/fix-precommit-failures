@@ -1,0 +1,109 @@
+#!/bin/bash
+#
+# Run pre-commit locally and let its own fixers converge, then report which
+# failures (if any) remain for AI/human attention.
+#
+# Many pre-commit hooks (trailing-whitespace, end-of-file-fixer, prettier,
+# black, etc.) auto-fix files in place and exit nonzero just to signal "I
+# changed something"-running pre-commit again after that succeeds. Hooks
+# that fail WITHOUT modifying anything (gitleaks, a misconfigured hook, a
+# real lint finding) will still be failing after convergence; those are
+# reported separately rather than guessed at. This is deliberately not a
+# per-hook-name command lookup table: hand-mapping "hook X -> fixer command
+# Y" is brittle and repo-specific, and silently wrong for a hook like
+# `vale-sync` whose "fix" isn't a formatting operation at all.
+#
+# Usage: fix-precommit-failures [MAX_PASSES]
+# Example: fix-precommit-failures
+#          fix-precommit-failures 5
+#
+# Must be run from inside a git working tree with a .pre-commit-config.yaml.
+# Leaves any auto-fixed changes staged (git add) but does not commit.
+#
+# Exit codes:
+#   0 = All hooks pass after convergence (nothing left to do, or already clean)
+#   1 = Some hooks still fail after convergence; see reported list
+#   2 = pre-commit not available, or no .pre-commit-config.yaml in this repo
+#   3 = Not inside a git repository
+#
+
+set -e
+
+MAX_PASSES="${1:-3}"
+
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+  echo "Error: Not inside a git repository" >&2
+  exit 3
+fi
+
+if ! command -v pre-commit > /dev/null 2>&1; then
+  echo "Error: pre-commit is not installed or not on PATH" >&2
+  exit 2
+fi
+
+if [[ ! -f .pre-commit-config.yaml ]]; then
+  echo "Error: No .pre-commit-config.yaml in $(pwd)" >&2
+  exit 2
+fi
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  fix-precommit-failures: converging (up to $MAX_PASSES pass(es))"
+echo "════════════════════════════════════════════════════════════════"
+
+PASS=0
+PREV_MODIFIED_COUNT=-1
+LAST_OUTPUT=""
+while [[ $PASS -lt $MAX_PASSES ]]; do
+  PASS=$((PASS + 1))
+  echo ""
+  echo "--- Pass $PASS ---"
+
+  BEFORE_HASH=$(git diff; git diff --cached)
+  set +e
+  LAST_OUTPUT=$(pre-commit run --all-files 2>&1)
+  set -e
+  AFTER_HASH=$(git diff; git diff --cached)
+
+  echo "$LAST_OUTPUT" | grep -E '\.\.\.(Passed|Failed|Skipped)' || true
+
+  if [[ "$BEFORE_HASH" == "$AFTER_HASH" ]]; then
+    # No fixer modified anything this pass; further passes won't help.
+    break
+  fi
+  echo "  (files were modified this pass; re-running to check convergence)"
+done
+
+# Stage anything the fixers touched so it's ready to commit/review.
+git add -A
+
+# Parse the FINAL pass's output for hooks still failing.
+STILL_FAILING_JSON=$(echo "$LAST_OUTPUT" | grep -B1 '^- hook id:' | grep -oE '^.+\.\.\.+Failed$' | sed -E 's/\.+Failed$//' | sed 's/[[:space:]]*$//' | jq -R -s 'split("\n") | map(select(length > 0))')
+STILL_FAILING_IDS_JSON=$(echo "$LAST_OUTPUT" | grep -oE '^- hook id: .+$' | sed 's/^- hook id: //' | jq -R -s 'split("\n") | map(select(length > 0))')
+
+STILL_FAILING_COUNT=$(echo "$STILL_FAILING_IDS_JSON" | jq 'length')
+MODIFIED_FILES=$(git diff --cached --name-only)
+if [[ -z "$MODIFIED_FILES" ]]; then
+  MODIFIED_COUNT=0
+else
+  MODIFIED_COUNT=$(echo "$MODIFIED_FILES" | wc -l | tr -d ' ')
+fi
+
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "  Result"
+echo "════════════════════════════════════════════════════════════════"
+echo "Passes run: $PASS"
+echo "Files auto-fixed and staged: $MODIFIED_COUNT"
+if [[ "$MODIFIED_COUNT" -gt 0 ]]; then
+  echo "$MODIFIED_FILES" | sed 's/^/  /'
+fi
+echo ""
+
+if [[ "$STILL_FAILING_COUNT" -eq 0 ]]; then
+  echo "✓ All hooks pass."
+  exit 0
+else
+  echo "✗ $STILL_FAILING_COUNT hook(s) still failing after convergence (need AI/human attention):"
+  echo "$STILL_FAILING_IDS_JSON" | jq -r '.[] | "  - \(.)"'
+  exit 1
+fi

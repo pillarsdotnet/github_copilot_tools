@@ -764,6 +764,93 @@ Step 2: Re-adding copilot-pull-request-reviewer as reviewer...
 
 ---
 
+### 19. `analyze-ci-failures` - Classify what failed in the latest CI run
+
+Fetches the latest CI run for a PR and classifies failures instead of making
+the AI read raw workflow logs. Combines `latest-ci-result` (run resolution),
+`gh run view --json jobs` (accurate failed job/step names-raw log step names
+are frequently "UNKNOWN STEP" due to a `gh` limitation), and `--log-failed`
+log content (pre-commit hook id/exit code extraction, generic error-pattern
+matching for test/git/external-dependency failures).
+
+```bash
+analyze-ci-failures <REPO> <PR_NUMBER> [--json]
+```
+
+**Examples:**
+```bash
+analyze-ci-failures mge0/DevOps 149
+analyze-ci-failures mge0/DevOps 149 --json
+```
+
+**Output (--json):**
+```json
+{
+  "conclusion": "failure",
+  "run_url": "https://github.com/mge0/DevOps/actions/runs/32361852145",
+  "failed_steps": [{"job": "Lint changed files", "step": "Sync Vale downloaded packages"}],
+  "failures": [
+    {
+      "type": "pre_commit_hook",
+      "hook_id": "vale-sync",
+      "occurrences": 3,
+      "requires_ai": true,
+      "reason": "not a known auto-fixable formatter hook; needs investigation"
+    }
+  ],
+  "summary": {"total": 1, "auto_fixable": 0, "requires_ai": 1}
+}
+```
+
+Repeated retries of the same hook (a retry-loop step, as with `vale-sync`
+above) collapse into one entry with an `occurrences` count rather than being
+reported as separate failures.
+
+**Exit codes:**
+- `0` = CI passed; nothing to analyze
+- `1` = CI failed; failures were parsed and reported
+- `2` = No CI run found, or the run is still in progress
+- `3` = Invalid arguments
+
+**Note:** `requires_ai` is `false` only for a small known set of auto-fixable
+formatter hooks (see `fix-precommit-failures` below)-everything else defaults
+to `true`, deliberately, so nothing gets silently mis-classified as handled.
+
+---
+
+### 20. `fix-precommit-failures` - Auto-converge pre-commit hooks locally
+
+Runs `pre-commit run --all-files` repeatedly (up to a pass limit) and lets
+its own fixers converge-hooks like `trailing-whitespace`, `end-of-file-fixer`,
+and `prettier` modify files in place and exit nonzero just to signal "I
+changed something," so rerunning after that succeeds. Reports whichever
+hooks are *still* failing after convergence (nothing left to auto-fix) for
+AI/human attention, rather than guessing at a fix. Deliberately not a
+per-hook-name command lookup table-hand-mapping "hook X → fixer command Y"
+is brittle and silently wrong for hooks whose failure isn't a formatting
+issue at all (e.g. a misconfigured hook, or `gitleaks`).
+
+```bash
+fix-precommit-failures [MAX_PASSES]
+```
+
+Must be run from inside a git working tree with a `.pre-commit-config.yaml`.
+Leaves auto-fixed changes staged (`git add`) but does not commit.
+
+**Examples:**
+```bash
+fix-precommit-failures        # up to 3 passes (default)
+fix-precommit-failures 5      # up to 5 passes
+```
+
+**Exit codes:**
+- `0` = All hooks pass after convergence
+- `1` = Some hooks still fail after convergence; see the reported list
+- `2` = pre-commit not available, or no `.pre-commit-config.yaml` here
+- `3` = Not inside a git repository
+
+---
+
 ## Workflow Examples
 
 ### Example 1: Check if review refresh is needed

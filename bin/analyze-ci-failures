@@ -1,0 +1,193 @@
+#!/bin/bash
+#
+# Analyze the latest CI run for a PR and classify what failed, so the AI
+# doesn't have to read raw workflow logs to find and categorize errors.
+#
+# Usage: analyze-ci-failures <REPO> <PR_NUMBER> [--json]
+# Example: analyze-ci-failures mge0/DevOps 116
+#
+# Combines three sources per failed run:
+#   - latest-ci-result, to resolve the run (conclusion, databaseId)
+#   - `gh run view --json jobs`, for accurate failed job/step names (raw log
+#     step names are frequently "UNKNOWN STEP" due to a `gh` limitation)
+#   - `gh run view --log-failed`, for log content: pre-commit hook id/exit
+#     code extraction and generic error-pattern matching
+#
+# Output (--json):
+#   {
+#     "conclusion": "failure",
+#     "run_url": "https://github.com/owner/repo/actions/runs/123",
+#     "failures": [
+#       {
+#         "job": "Lint changed files",
+#         "step": "Sync Vale downloaded packages",
+#         "type": "pre_commit_hook",
+#         "hook_id": "vale-sync",
+#         "occurrences": 3,
+#         "requires_ai": true,
+#         "reason": "not a known auto-fixable formatter hook"
+#       }
+#     ],
+#     "summary": {"total": 1, "auto_fixable": 0, "requires_ai": 1}
+#   }
+#
+# Categories: pre_commit_hook, test_failure, git_operation,
+#             external_dependency, unknown
+#
+# Exit codes:
+#   0 = CI passed (no failures to analyze)
+#   1 = CI failed; failures were parsed and reported
+#   2 = No CI run found, or run is still in progress
+#   3 = Invalid arguments
+#
+
+set -e
+
+REPO="$1"
+PR_NUMBER="$2"
+OUTPUT_FORMAT="text"
+[[ "$3" == "--json" ]] && OUTPUT_FORMAT="json"
+
+if [[ -z "$REPO" ]] || [[ -z "$PR_NUMBER" ]]; then
+  echo "Usage: analyze-ci-failures <REPO> <PR_NUMBER> [--json]" >&2
+  echo "Example: analyze-ci-failures mge0/DevOps 116" >&2
+  exit 3
+fi
+
+RUN_JSON=$(latest-ci-result "$REPO" "$PR_NUMBER" 2>/dev/null || true)
+if [[ -z "$RUN_JSON" ]]; then
+  echo "Error: No CI run found for $REPO #$PR_NUMBER" >&2
+  exit 2
+fi
+
+CONCLUSION=$(echo "$RUN_JSON" | jq -r '.conclusion // "in_progress"')
+RUN_ID=$(echo "$RUN_JSON" | jq -r '.databaseId')
+
+if [[ "$CONCLUSION" == "success" ]] || [[ "$CONCLUSION" == "skipped" ]]; then
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    jq -n --arg c "$CONCLUSION" '{conclusion: $c, failures: [], summary: {total: 0, auto_fixable: 0, requires_ai: 0}}'
+  else
+    echo "✓ CI passed ($CONCLUSION); nothing to analyze."
+  fi
+  exit 0
+fi
+
+if [[ "$CONCLUSION" != "failure" ]] && [[ "$CONCLUSION" != "timed_out" ]] && [[ "$CONCLUSION" != "cancelled" ]]; then
+  echo "CI is still in progress (status: $(echo "$RUN_JSON" | jq -r '.status // "unknown"')); nothing to analyze yet." >&2
+  exit 2
+fi
+
+RUN_META=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs,url 2>/dev/null)
+RUN_URL=$(echo "$RUN_META" | jq -r '.url')
+
+# job -> step name of each failed step, tab-separated (job may repeat if
+# multiple steps failed in it, though usually only the first one does).
+FAILED_STEPS=$(echo "$RUN_META" | jq -r '.jobs[] | select(.conclusion == "failure") | .name as $job | .steps[] | select(.conclusion == "failure") | [$job, .name] | @tsv')
+
+LOG=$(gh run view "$RUN_ID" --repo "$REPO" --log-failed 2>/dev/null || true)
+
+# Extract pre-commit hook failures: a "<name>....Failed" line followed
+# shortly by "- hook id: <id>" and "- exit code: <n>". Retries of the same
+# hook (e.g. a retry-loop step) collapse into one entry with an occurrence
+# count, since it's one underlying failure, not several.
+HOOK_FAILURES_JSON=$(echo "$LOG" | grep -o '\- hook id: [^[:space:]]*' | awk '{print $NF}' | sort | uniq -c | awk '{print "{\"hook_id\":\""$2"\",\"occurrences\":"$1"}"}' | jq -s '.')
+
+# Generic pattern matches across the whole failed-step log, for failures
+# that aren't pre-commit hooks (test runners, git operations, known flaky
+# external dependencies).
+declare -A PATTERN_TO_TYPE=(
+  ["Test failed|AssertionError|FAIL:|expected .* got"]="test_failure"
+  ["Kusto\\.Language|BlobNotFound"]="external_dependency"
+  ["CONFLICT|could not apply|fatal: |rebase.*failed"]="git_operation"
+)
+
+AUTO_FIXABLE_HOOKS="trailing-whitespace end-of-file-fixer mixed-line-ending prettier black isort gofmt terraform-fmt terraform_fmt"
+
+FAILURES_JSON="[]"
+
+# One entry per pre-commit hook failure found in the log.
+while IFS= read -r HOOK; do
+  [[ -z "$HOOK" ]] && continue
+  HOOK_ID=$(echo "$HOOK" | jq -r '.hook_id')
+  OCCURRENCES=$(echo "$HOOK" | jq -r '.occurrences')
+  AUTO_FIXABLE="false"
+  for H in $AUTO_FIXABLE_HOOKS; do
+    [[ "$HOOK_ID" == "$H" ]] && AUTO_FIXABLE="true"
+  done
+  if [[ "$AUTO_FIXABLE" == "true" ]]; then
+    REQUIRES_AI="false"
+    REASON="known auto-fixable formatter hook; try fix-precommit-failures"
+  else
+    REQUIRES_AI="true"
+    REASON="not a known auto-fixable formatter hook; needs investigation"
+  fi
+  ENTRY=$(jq -n \
+    --arg type "pre_commit_hook" \
+    --arg hook_id "$HOOK_ID" \
+    --argjson occurrences "$OCCURRENCES" \
+    --argjson requires_ai "$REQUIRES_AI" \
+    --arg reason "$REASON" \
+    '{type: $type, hook_id: $hook_id, occurrences: $occurrences, requires_ai: $requires_ai, reason: $reason}')
+  FAILURES_JSON=$(echo "$FAILURES_JSON" | jq --argjson e "$ENTRY" '. + [$e]')
+done < <(echo "$HOOK_FAILURES_JSON" | jq -c '.[]')
+
+# Generic pattern matches, only reported if no pre-commit hook already
+# explains the failure (avoids double-reporting the same underlying issue).
+if [[ "$(echo "$FAILURES_JSON" | jq 'length')" -eq 0 ]]; then
+  for PATTERN in "${!PATTERN_TO_TYPE[@]}"; do
+    if echo "$LOG" | grep -qiE "$PATTERN"; then
+      TYPE="${PATTERN_TO_TYPE[$PATTERN]}"
+      REQUIRES_AI="true"
+      [[ "$TYPE" == "external_dependency" ]] && REQUIRES_AI="false"
+      SNIPPET=$(echo "$LOG" | grep -iE "$PATTERN" | head -1 | sed 's/^[^\t]*\t[^\t]*\t[0-9TZ:.-]*Z//')
+      ENTRY=$(jq -n \
+        --arg type "$TYPE" \
+        --arg snippet "$SNIPPET" \
+        --argjson requires_ai "$REQUIRES_AI" \
+        '{type: $type, snippet: $snippet, requires_ai: $requires_ai}')
+      FAILURES_JSON=$(echo "$FAILURES_JSON" | jq --argjson e "$ENTRY" '. + [$e]')
+    fi
+  done
+fi
+
+# Fallback: nothing recognized, but the run did fail-surface the failed
+# job/step names so there's still something actionable to hand to the AI.
+if [[ "$(echo "$FAILURES_JSON" | jq 'length')" -eq 0 ]] && [[ -n "$FAILED_STEPS" ]]; then
+  FAILURES_JSON=$(echo "$FAILED_STEPS" | jq -Rs '
+    split("\n") | map(select(length > 0) | split("\t")) |
+    map({type: "unknown", job: .[0], step: .[1], requires_ai: true, reason: "unrecognized failure pattern; read the run log"})
+  ')
+fi
+
+TOTAL=$(echo "$FAILURES_JSON" | jq 'length')
+AUTO_FIXABLE_COUNT=$(echo "$FAILURES_JSON" | jq '[.[] | select(.requires_ai == false)] | length')
+REQUIRES_AI_COUNT=$(echo "$FAILURES_JSON" | jq '[.[] | select(.requires_ai == true)] | length')
+
+FAILED_STEPS_JSON=$(echo "$FAILED_STEPS" | jq -Rs '
+  split("\n") | map(select(length > 0) | split("\t")) | map({job: .[0], step: .[1]})
+')
+
+RESULT=$(jq -n \
+  --arg conclusion "$CONCLUSION" \
+  --arg run_url "$RUN_URL" \
+  --argjson failed_steps "$FAILED_STEPS_JSON" \
+  --argjson failures "$FAILURES_JSON" \
+  --argjson total "$TOTAL" \
+  --argjson auto_fixable "$AUTO_FIXABLE_COUNT" \
+  --argjson requires_ai "$REQUIRES_AI_COUNT" \
+  '{conclusion: $conclusion, run_url: $run_url, failed_steps: $failed_steps, failures: $failures, summary: {total: $total, auto_fixable: $auto_fixable, requires_ai: $requires_ai}}')
+
+if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+  echo "$RESULT"
+else
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  CI failures for $REPO #$PR_NUMBER ($CONCLUSION)"
+  echo "════════════════════════════════════════════════════════════════"
+  echo "Run: $RUN_URL"
+  echo "Failed step(s): $(echo "$RESULT" | jq -r '[.failed_steps[] | "\(.job) > \(.step)"] | join(", ")')"
+  echo "Total: $TOTAL  (auto-fixable: $AUTO_FIXABLE_COUNT, needs AI: $REQUIRES_AI_COUNT)"
+  echo ""
+  echo "$RESULT" | jq -r '.failures[] | "  [\(.type)] \(.hook_id // .step // "?")  (occurrences: \(.occurrences // 1), requires_ai: \(.requires_ai))\n    \(.reason // .snippet // "")\n"'
+fi
+
+exit 1
