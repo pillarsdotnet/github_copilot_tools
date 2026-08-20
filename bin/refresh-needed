@@ -90,40 +90,23 @@ if [[ -z "$REPO_NAME" ]]; then
   exit 1
 fi
 
-REVIEW_IDS=$(review-database-ids -r "$REPO" "$PR_NUM" 2>/dev/null || echo "")
+mapfile -t REVIEW_IDS < <(review-database-ids -r "$REPO" "$PR_NUM" 2>/dev/null || true)
 HIDDEN_COUNT=0
-SKIPPED_COUNT=0
-FOUND_NON_SENTINEL=0
+REVIEW_COUNT=${#REVIEW_IDS[@]}
 
-for ID in $REVIEW_IDS; do
-  # Check if this is a sentinel review
-  if is-sentinel-review -r "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
-    # This IS a sentinel review
-    if (( FILES_CHANGED )); then
-      # Sentinel reviews become outdated when new changes are made
-      echo "Hiding outdated sentinel review $ID..."
-      hide-pr-review -r "$REPO" "$PR_NUM" "$ID" 2>/dev/null || true
-      HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
-    else
-      # No changes; keep the sentinel review as a checkpoint
-      echo "Keeping sentinel review $ID (no new changes)"
-      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
-    fi
-  else
-    # This is NOT a sentinel—it has actionable comments
-    echo "Hiding review $ID (outstanding comments)..."
+# Hide all reviews except the last one.
+if [[ $REVIEW_COUNT -gt 1 ]]; then
+  for ((i=0; i<REVIEW_COUNT-1; i++)); do
+    ID="${REVIEW_IDS[$i]}"
+    echo "Hiding stale review $ID..."
     hide-pr-review -r "$REPO" "$PR_NUM" "$ID" 2>/dev/null || true
     HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
-    FOUND_NON_SENTINEL=1
-  fi
-done
+  done
+fi
 
 echo ""
 if [[ $HIDDEN_COUNT -gt 0 ]]; then
   echo "✓ Hidden $HIDDEN_COUNT review(s)"
-fi
-if [[ $SKIPPED_COUNT -gt 0 ]]; then
-  echo "✓ Kept $SKIPPED_COUNT sentinel review(s) as checkpoint"
 fi
 echo ""
 
@@ -131,19 +114,27 @@ echo "════════════════════════�
 echo "  Step 3: Determine if new review is needed"
 echo "════════════════════════════════════════════════════════════════"
 
-# A new review is needed if:
-# 1. No non-sentinel reviews remain (only sentinels hid if FILES_CHANGED)
-# 2. AND files have been changed (FILES_CHANGED > 0)
+# Decision flow based on the last remaining review.
+if [[ $REVIEW_COUNT -eq 0 ]]; then
+  if (( FILES_CHANGED )); then
+    echo "✓ New review needed: No open reviews remain, $FILES_CHANGED file(s) changed"
+    exit 0
+  fi
+  echo "✗ New review not needed:"
+  echo "  - No open reviews and no files changed since last review (pure rebase)"
+  exit 1
+fi
 
-if [[ $FOUND_NON_SENTINEL -eq 0 ]] && (( FILES_CHANGED )); then
-  echo "✓ New review needed: No outstanding comments, $FILES_CHANGED file(s) changed"
-  exit 0
+LAST_ID="${REVIEW_IDS[$((REVIEW_COUNT - 1))]}"
+if is-sentinel-review -r "$REPO" "$PR_NUM" "$LAST_ID" 2>/dev/null; then
+  echo "Keeping sentinel review $LAST_ID (latest review is already a clean checkpoint)"
+  echo "✗ New review not needed:"
+  echo "  - Latest open review is a sentinel"
+  exit 1
 fi
-echo "✗ New review not needed:"
-if [[ $FOUND_NON_SENTINEL -eq 1 ]]; then
-  echo "  - Outstanding comments remain in previous reviews"
-fi
-if ! (( FILES_CHANGED )); then
-  echo "  - No files changed since last review (pure rebase)"
-fi
-exit 1
+
+echo "Hiding latest non-sentinel review $LAST_ID..."
+hide-pr-review -r "$REPO" "$PR_NUM" "$LAST_ID" 2>/dev/null || true
+HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
+echo "✓ New review needed: Latest review was non-sentinel and has been hidden"
+exit 0
