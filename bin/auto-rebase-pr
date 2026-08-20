@@ -207,8 +207,11 @@ APPLY_ARGS=(apply-pr-diffs "origin/$BASE" "origin/$HEAD" "$CLEAN_BRANCH")
 [[ $FORCE -eq 1 ]] && APPLY_ARGS+=(--force)
 
 APPLY_OUTPUT=$(mktemp)
-if ! "${APPLY_ARGS[@]}" > "$APPLY_OUTPUT" 2>&1; then
-  APPLY_EXIT=$?
+set +e
+"${APPLY_ARGS[@]}" > "$APPLY_OUTPUT" 2>&1
+APPLY_EXIT=$?
+set -e
+if [[ $APPLY_EXIT -ne 0 ]]; then
   echo "✗ apply-pr-diffs failed with exit code $APPLY_EXIT" >&2
   echo "  Diagnostic output:" >&2
   sed 's/^/    /' "$APPLY_OUTPUT" >&2
@@ -223,10 +226,19 @@ if ! git rev-parse --verify "$CLEAN_BRANCH" > /dev/null 2>&1; then
   exit 6
 fi
 
-if ! git diff --quiet "$CLEAN_BRANCH"; then
-  echo "✗ apply-pr-diffs completed but $CLEAN_BRANCH has uncommitted changes" >&2
-  echo "  This indicates apply-pr-diffs left the working tree dirty." >&2
-  git diff --name-only "$CLEAN_BRANCH" | sed 's/^/    /' >&2
+# apply-pr-diffs stages changes but never commits, so the working tree will
+# always differ from $CLEAN_BRANCH's own tip at this point-that's expected,
+# not a problem. What we actually need to verify is that everything is
+# staged (nothing left as loose unstaged edits) and that something IS
+# staged (apply-pr-diffs did real work).
+if ! git diff --quiet; then
+  echo "✗ apply-pr-diffs completed but left unstaged changes on $CLEAN_BRANCH" >&2
+  git status --short >&2
+  exit 6
+fi
+
+if git diff --cached --quiet; then
+  echo "✗ apply-pr-diffs completed but nothing is staged on $CLEAN_BRANCH" >&2
   exit 6
 fi
 
