@@ -93,6 +93,7 @@ fi
 REVIEW_IDS=$(review-database-ids -r "$REPO" "$PR_NUM" 2>/dev/null || echo "")
 HIDDEN_COUNT=0
 SKIPPED_COUNT=0
+FOUND_NON_SENTINEL=0
 
 for ID in $REVIEW_IDS; do
   # Check if this is a sentinel review
@@ -113,6 +114,7 @@ for ID in $REVIEW_IDS; do
     echo "Hiding review $ID (outstanding comments)..."
     hide-pr-review -r "$REPO" "$PR_NUM" "$ID" 2>/dev/null || true
     HIDDEN_COUNT=$((HIDDEN_COUNT + 1))
+    FOUND_NON_SENTINEL=1
   fi
 done
 
@@ -130,29 +132,18 @@ echo "  Step 3: Determine if new review is needed"
 echo "════════════════════════════════════════════════════════════════"
 
 # A new review is needed if:
-# 1. All remaining reviews are sentinels (no outstanding comments)
+# 1. No non-sentinel reviews remain (only sentinels hid if FILES_CHANGED)
 # 2. AND files have been changed (FILES_CHANGED > 0)
 
-ALL_SENTINEL=1
-for ID in $REVIEW_IDS; do
-  if ! is-sentinel-review -r "$REPO" "$PR_NUM" "$ID" 2>/dev/null; then
-    # Review is NOT a sentinel (has outstanding comments)
-    ALL_SENTINEL=0
-    break
-  fi
-done
-
-# Determine exit code
-if [[ $ALL_SENTINEL -eq 1 ]] && (( FILES_CHANGED )); then
-  echo "✓ New review needed: All reviews resolved, $FILES_CHANGED file(s) changed"
+if [[ $FOUND_NON_SENTINEL -eq 0 ]] && (( FILES_CHANGED )); then
+  echo "✓ New review needed: No outstanding comments, $FILES_CHANGED file(s) changed"
   exit 0
-else
-  echo "✗ New review not needed:"
-  if [[ $ALL_SENTINEL -eq 0 ]]; then
-    echo "  - Outstanding comments remain in previous reviews"
-  fi
-  if ! (( FILES_CHANGED )); then
-    echo "  - No files changed since last review (pure rebase)"
-  fi
-  exit 1
 fi
+echo "✗ New review not needed:"
+if [[ $FOUND_NON_SENTINEL -eq 1 ]]; then
+  echo "  - Outstanding comments remain in previous reviews"
+fi
+if ! (( FILES_CHANGED )); then
+  echo "  - No files changed since last review (pure rebase)"
+fi
+exit 1
