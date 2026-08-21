@@ -44,6 +44,7 @@ which copilot-reviews
 - `gh` (GitHub CLI) - [install](https://cli.github.com/)
 - `jq` (JSON processor) - [install](https://stedolan.github.io/jq/download/)
 - GitHub CLI authentication: `gh auth login`
+- `ts` (from `moreutils`) - only required by `copilot_log`
 
 ## Available Scripts
 
@@ -887,6 +888,31 @@ fix-precommit-failures 5      # up to 5 passes
 - `1` = Some hooks still fail after convergence; see the reported list
 - `2` = pre-commit not available, or no `.pre-commit-config.yaml` here
 - `3` = Not inside a git repository
+
+---
+
+### 21. `copilot_log` - Log GitHub Copilot usage counters
+
+Reads `aicNano`, `inputTokens`, and `outputTokens` from
+`~/.copilot/copilot-usage-counters.json` and prints them as a single
+timestamped line, suitable for appending to a log file (e.g. from cron or a
+shell prompt hook) to track Copilot usage over time.
+
+```bash
+copilot_log [LABEL...]
+```
+
+Any extra arguments are appended verbatim to the line, useful for tagging
+entries (e.g. with a hostname or session name).
+
+**Examples:**
+```bash
+copilot_log                  # 2026-08-20T21:29:00+0000 12345 6789 4321
+copilot_log session-a        # 2026-08-20T21:29:00+0000 12345 6789 4321 session-a
+copilot_log >> ~/.copilot/usage.log
+```
+
+**Requirements:** `jq` and `ts` (from `moreutils`).
 
 ---
 

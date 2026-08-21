@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+COUNTERS_FILE="${HOME}/.copilot/copilot-usage-counters.json"
+
+aic_nano="$(jq -r '.aicNano' "$COUNTERS_FILE")"
+input_tokens="$(jq -r '.inputTokens' "$COUNTERS_FILE")"
+output_tokens="$(jq -r '.outputTokens' "$COUNTERS_FILE")"
+
+{
+  printf '%s %s %s' "$aic_nano" "$input_tokens" "$output_tokens"
+  if [ "$#" -gt 0 ]; then
+    printf ' %s' "$@"
+  fi
+  printf '\n'
+} | ts '%Y-%m-%dT%H:%M:%S%z'
