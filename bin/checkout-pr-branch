@@ -13,11 +13,9 @@
 # directory's GitHub remote instead.
 #
 # Exit codes:
-#   0 = Successfully checked out branch
+#   0 = Branch ready for work (checked out or already on target)
 #   1 = PR not found or branch checkout failed
-#   2 = Already on target branch
 #   3 = Invalid arguments
-#   4 = Branch doesn't exist locally (can fetch with git fetch)
 #
 
 set -e
@@ -82,25 +80,20 @@ CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
 # Check if already on target branch
 if [[ "$CURRENT_BRANCH" == "$HEAD_BRANCH" ]]; then
   echo "✓ Already on branch: $HEAD_BRANCH"
-  exit 2
+  exit 0
 fi
 
-# Try to checkout the branch
+# Try to checkout the branch; if it doesn't exist locally, fetch it from
+# origin and check it out.
 if git checkout "$HEAD_BRANCH" 2>/dev/null; then
   echo "✓ Checked out branch: $HEAD_BRANCH"
-  
-  # Show branch status
-  git log -1 --oneline
-  exit 0
+elif git fetch origin "$HEAD_BRANCH":"$HEAD_BRANCH" 2>/dev/null && git checkout "$HEAD_BRANCH" 2>/dev/null; then
+  echo "✓ Fetched and checked out branch: $HEAD_BRANCH"
 else
-  # Branch doesn't exist locally
-  echo "Error: Branch '$HEAD_BRANCH' does not exist locally" >&2
-  echo ""
-  echo "Branch exists on remote. To fetch and track it:" >&2
-  echo "  git fetch origin $HEAD_BRANCH:$HEAD_BRANCH" >&2
-  echo "  git checkout $HEAD_BRANCH" >&2
-  echo ""
-  echo "Or fetch all remote branches:" >&2
-  echo "  git fetch origin" >&2
-  exit 4
+  echo "Error: Failed to checkout branch '$HEAD_BRANCH' (not found locally or on origin)" >&2
+  exit 1
 fi
+
+# Show branch status
+git log -1 --oneline
+exit 0

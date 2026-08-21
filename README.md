@@ -386,11 +386,9 @@ checkout-pr-branch 116  # REPO derived from cwd
 ```
 
 **Exit codes:**
-- `0` = Successfully checked out branch
+- `0` = Branch ready for work (checked out or already on target)
 - `1` = PR not found or branch checkout failed
-- `2` = Already on target branch
 - `3` = Invalid arguments
-- `4` = Branch doesn't exist locally (can fetch with git fetch)
 
 **Usage examples:**
 ```bash
@@ -913,6 +911,38 @@ copilot_log >> ~/.copilot/usage.log
 ```
 
 **Requirements:** `jq` and `ts` (from `moreutils`).
+
+---
+
+### 22. `push-with-retry` - Push the current branch with automatic retry
+
+Push the current branch to origin with `--force-with-lease`, retrying
+transient network failures (dropped connections, HTTP 5xx, DNS hiccups) with
+exponential backoff. `--force-with-lease` re-validates the remote ref on
+every attempt, so a retry cannot silently clobber a ref that changed in
+between. Rejections that reflect real repository state (stale lease,
+non-fast-forward, auth failure, protected branch) are never retried.
+
+```bash
+push-with-retry [-n MAX_RETRIES] [-d INITIAL_DELAY] [--dry-run]
+```
+
+**Examples:**
+```bash
+push-with-retry
+push-with-retry -n 3 -d 10
+push-with-retry --dry-run
+```
+
+Retries default to 5, with backoff starting at 5s and doubling each retry
+(5s, 10s, 20s, 40s, 80s).
+
+**Exit codes:**
+- `0` = Push succeeded (or nothing to push)
+- `1` = Non-retryable push failure (see diagnostic message)
+- `2` = Retryable failure that never succeeded within MAX_RETRIES
+- `3` = Invalid arguments or usage error
+- `4` = Not in a git repository, or HEAD is detached (no branch to push)
 
 ---
 

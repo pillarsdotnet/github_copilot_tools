@@ -1,0 +1,176 @@
+#!/bin/bash
+#
+# Push the current branch to origin with force-with-lease, retrying transient
+# network failures with exponential backoff.
+#
+# GitHub occasionally drops a push mid-transfer ("unexpected disconnect while
+# reading sideband packet", "Connection reset by peer", HTTP 5xx). Those are
+# environmental and safe to retry: --force-with-lease re-validates the remote
+# ref on every attempt, so a retry cannot silently clobber a ref that changed
+# in between. Rejections that reflect real repository state (stale lease,
+# non-fast-forward, auth, protected branch) are never retried.
+#
+# Usage: push-with-retry [-n MAX_RETRIES] [-d INITIAL_DELAY] [--dry-run]
+# Example: push-with-retry
+#          push-with-retry -n 3 -d 10
+#
+# Retries default to 5, with backoff starting at 5s and doubling each retry
+# (5s, 10s, 20s, 40s, 80s).
+#
+# Exit codes:
+#   0 = Push succeeded (or nothing to push)
+#   1 = Non-retryable push failure (see diagnostic message)
+#   2 = Retryable failure that never succeeded within MAX_RETRIES
+#   3 = Invalid arguments or usage error
+#   4 = Not in a git repository, or HEAD is detached (no branch to push)
+#
+
+set -uo pipefail
+
+MAX_RETRIES=5
+INITIAL_DELAY=5
+DRY_RUN=false
+
+die() {
+  echo "Error: $1" >&2
+  exit "$2"
+}
+
+# Arguments.
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n)
+      [[ $# -ge 2 ]] || die "-n requires an argument" 3
+      MAX_RETRIES="$2"
+      shift 2
+      ;;
+    -d)
+      [[ $# -ge 2 ]] || die "-d requires an argument" 3
+      INITIAL_DELAY="$2"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    -h|--help)
+      sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      die "unknown argument '$1' (see --help)" 3
+      ;;
+  esac
+done
+
+[[ "$MAX_RETRIES" =~ ^[0-9]+$ ]] || die "-n must be a non-negative integer, got '$MAX_RETRIES'" 3
+[[ "$INITIAL_DELAY" =~ ^[0-9]+$ ]] || die "-d must be a non-negative integer, got '$INITIAL_DELAY'" 3
+
+# Step 1: detect the current local branch.
+git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository" 4
+
+BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+if [[ -z "$BRANCH" ]]; then
+  die "HEAD is detached; check out a branch before pushing" 4
+fi
+
+# Classify a failure by inspecting git's combined output. Anything not matched
+# here is treated as non-retryable: retrying an unknown failure risks looping
+# on a real problem, and a clear diagnostic is more useful than a delay.
+is_retryable() {
+  local output="$1"
+
+  # Real repository-state rejections. Checked first so that a message which
+  # happens to contain both (for example a lease failure reported alongside a
+  # dropped connection) is treated as non-retryable.
+  if grep -Eqi \
+    'stale info|non-fast-forward|fetch first|Updates were rejected|protected branch|permission denied|access denied|authentication failed|could not read Username|repository not found|pre-receive hook declined|remote: error: GH|does not match any|refusing to (delete|update)' \
+    <<<"$output"; then
+    return 1
+  fi
+
+  # Transport-layer failures. "Connection refused" and friends are included
+  # because git reports them alongside its generic "Could not read from remote
+  # repository / check your access rights" hint, which reads like an auth
+  # problem but is not: the socket never opened, so the remote never had a
+  # chance to evaluate credentials.
+  grep -Eqi \
+    'unexpected disconnect|sideband packet|Connection reset|Connection closed|Connection refused|closed by remote host|hung up unexpectedly|Broken pipe|Operation timed out|Connection timed out|timed out|Could not resolve host|Temporary failure in name resolution|Network is unreachable|No route to host|ssh: connect to host|TLS|SSL_ERROR|GnuTLS|RPC failed|HTTP 4(08|29)|HTTP 5[0-9][0-9]|error: 5[0-9][0-9]|early EOF|index-pack failed|kex_exchange_identification|Resource temporarily unavailable|remote end hung up' \
+    <<<"$output"
+}
+
+echo "Pushing branch '$BRANCH' to origin (force-with-lease)"
+
+if [[ "$DRY_RUN" == true ]]; then
+  echo "[dry-run] git push --force-with-lease origin $BRANCH"
+  exit 0
+fi
+
+delay="$INITIAL_DELAY"
+attempt=0
+last_output=""
+
+# One initial attempt plus up to MAX_RETRIES retries.
+while (( attempt <= MAX_RETRIES )); do
+  if (( attempt > 0 )); then
+    echo "Retry $attempt of $MAX_RETRIES after ${delay}s..." >&2
+    sleep "$delay"
+    delay=$(( delay * 2 ))
+  fi
+
+  # Step 2: the push itself. Output is captured for classification and echoed
+  # so the caller still sees git's own progress and error text.
+  last_output=$(git push --force-with-lease origin "$BRANCH" 2>&1)
+  rc=$?
+  printf '%s\n' "$last_output"
+
+  if (( rc == 0 )); then
+    echo "✓ Pushed '$BRANCH' to origin"
+    exit 0
+  fi
+
+  # Step 4: non-retryable errors stop immediately with a diagnostic.
+  if ! is_retryable "$last_output"; then
+    echo "" >&2
+    echo "Error: push of '$BRANCH' failed with a non-retryable error (git exit $rc)." >&2
+    case "$last_output" in
+      *"stale info"*)
+        echo "Cause: --force-with-lease refused the push because origin/$BRANCH moved since your last fetch." >&2
+        echo "Fix:   git fetch origin $BRANCH, review the remote commits, then push again." >&2
+        ;;
+      *"non-fast-forward"*|*"fetch first"*|*"Updates were rejected"*)
+        echo "Cause: the remote branch has commits your local branch does not contain." >&2
+        echo "Fix:   git fetch origin $BRANCH and rebase onto it before pushing." >&2
+        ;;
+      *"protected branch"*|*"pre-receive hook declined"*)
+        echo "Cause: a branch protection rule or server-side hook rejected the push." >&2
+        echo "Fix:   push through a pull request, or adjust the protection rule." >&2
+        ;;
+      *"Permission denied"*|*"permission denied"*|*"Authentication failed"*|*"could not read Username"*)
+        echo "Cause: the remote rejected your credentials." >&2
+        echo "Fix:   re-authenticate (gh auth login, or check your SSH key) and retry." >&2
+        ;;
+      *"Repository not found"*)
+        echo "Cause: origin does not resolve to a repository you can write to." >&2
+        echo "Fix:   verify git remote -v and your access to that repository." >&2
+        ;;
+      *)
+        echo "Cause: git reported an error that is not a known transient network failure." >&2
+        echo "Fix:   read git's output above; this was not retried to avoid masking a real problem." >&2
+        ;;
+    esac
+    exit 1
+  fi
+
+  echo "Transient push failure detected (git exit $rc)." >&2
+  attempt=$(( attempt + 1 ))
+done
+
+# Step 3 exhausted: every attempt failed for a retryable reason.
+echo "" >&2
+echo "Error: push of '$BRANCH' failed after $((MAX_RETRIES + 1)) attempts." >&2
+echo "Every attempt failed with a transient network error; the last one was:" >&2
+printf '%s\n' "$last_output" >&2
+echo "" >&2
+echo "Fix:   check connectivity to the remote, then re-run push-with-retry." >&2
+exit 2
