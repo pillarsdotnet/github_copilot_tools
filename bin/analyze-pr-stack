@@ -170,7 +170,17 @@ if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     '{stack: $stack, order: "bottom-to-top (root -> leaves)", root_branch: $root_branch, leaves: $leaves, closed: $closed}'
 else
   echo "$DEFAULT_BRANCH"
-  echo "$TRAVERSAL_JSON" | jq -c 'sort_by(.depth)[]' | while read -r PR; do
+  # Build a list of branches that are bases of open PRs (these identify connectors).
+  OPEN_BASE_BRANCHES=$(echo "$TRAVERSAL_JSON" | jq -c '[.[] | select(.state == "OPEN") | .baseRefName] | unique')
+
+  # Determine which closed PRs are connectors: their head branch is the base of any open PR.
+  CONNECTOR_CLOSED=$(echo "$TRAVERSAL_JSON" | jq -c --argjson open_bases "$OPEN_BASE_BRANCHES" \
+    '[.[] | select(.state != "OPEN" and (.headRefName | IN($open_bases[]))) | .number]')
+
+  # Output the tree, including only open PRs and closed PRs that are connectors.
+  echo "$TRAVERSAL_JSON" | jq -c --argjson connectors "$CONNECTOR_CLOSED" \
+    'sort_by(.depth)[] | select(.state == "OPEN" or (.number | IN($connectors[])))' \
+    | while read -r PR; do
     NUM=$(echo "$PR" | jq -r '.number')
     TITLE=$(echo "$PR" | jq -r '.title')
     STATE=$(echo "$PR" | jq -r '.state')
@@ -179,7 +189,7 @@ else
     if [[ "$STATE" == "OPEN" ]]; then
       MARK="PR #$NUM"
     else
-      MARK="PR #$NUM (${STATE,,}, skip)"
+      MARK="PR #$NUM (${STATE,,}, connector)"
     fi
     echo "  ${INDENT}└── ${MARK}: ${TITLE}"
   done
