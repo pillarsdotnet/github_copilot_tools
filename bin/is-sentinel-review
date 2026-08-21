@@ -2,8 +2,11 @@
 #
 # Check if a Copilot review IS a sentinel (has no outstanding comments).
 #
-# A sentinel review contains "generated no new comments", meaning Copilot
-# found no new issues to report. This is the opposite of not-sentinel-review.
+# A sentinel review is a clean checkpoint:
+#   1) "generated no new comments"
+#   2) no suppressed comments with non-zero count
+#
+# This is the opposite of not-sentinel-review.
 #
 # Usage: is-sentinel-review [-r REPO] <PR_NUMBER> <REVIEW_DATABASE_ID>
 # Example: is-sentinel-review -r owner/repo 116 4964619882

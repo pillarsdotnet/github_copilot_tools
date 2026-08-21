@@ -2,9 +2,12 @@
 #
 # Check if a Copilot review is NOT a sentinel (has outstanding comments).
 #
-# A sentinel review contains "generated no new comments", meaning Copilot
-# found no new issues to report. This script returns 0 if the review is
-# NOT a sentinel (still has outstanding comments).
+# A sentinel review must be a clean checkpoint:
+#   1) Review body says "generated no new comments"
+#   2) It has no suppressed comments section with a non-zero count
+#
+# This script returns 0 if the review is NOT a sentinel (still has
+# outstanding comments).
 #
 # Usage: not-sentinel-review [-r REPO] <PR_NUMBER> <REVIEW_DATABASE_ID>
 # Example: not-sentinel-review -r owner/repo 116 4964619882
@@ -82,13 +85,21 @@ if [[ -z "$REVIEW_BODY" ]]; then
   exit 2
 fi
 
-if echo "$REVIEW_BODY" | grep -q "generated no new comments"; then
-  # This IS a sentinel, so NOT a sentinel = false (exit 1)
-  exit 1
-elif echo "$REVIEW_BODY" | grep -q "Copilot encountered an error"; then
+# Treat Copilot error reviews as non-blocking/sentinel-equivalent.
+if echo "$REVIEW_BODY" | grep -q "Copilot encountered an error"; then
   # Error reviews are non-blocking (treat as sentinels), so NOT a sentinel = false (exit 1)
   exit 1
-else
-  # This is NOT a sentinel, so NOT a sentinel = true (exit 0)
+fi
+
+if ! echo "$REVIEW_BODY" | grep -q "generated no new comments"; then
+  # Missing clean-checkpoint marker => NOT a sentinel
   exit 0
 fi
+
+if echo "$REVIEW_BODY" | grep -Eq "(<summary>)?Suppressed comments \\(([1-9][0-9]*)\\)(</summary>)?"; then
+  # Suppressed comments present => NOT a sentinel
+  exit 0
+fi
+
+# Clean checkpoint with no suppressed comments => IS a sentinel
+exit 1

@@ -16,7 +16,8 @@
 #   1 = New review NOT needed (reviews remain OR no file changes)
 #
 # Note: There should be at most one sentinel review per PR. Sentinel reviews
-# represent a "clean" checkpoint and become outdated if new changes are made.
+# represent a "clean" checkpoint ("generated no new comments" and zero
+# suppressed comments) and become outdated if new changes are made.
 #
 # Usage: refresh-needed [-r REPO] <PR_NUMBER> <FILES_CHANGED_COUNT>
 # Example: refresh-needed -r owner/repo 116 3
