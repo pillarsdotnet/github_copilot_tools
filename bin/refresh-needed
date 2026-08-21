@@ -128,9 +128,18 @@ fi
 
 LAST_ID="${REVIEW_IDS[$((REVIEW_COUNT - 1))]}"
 if is-sentinel-review -r "$REPO" "$PR_NUM" "$LAST_ID" 2>/dev/null; then
+  # Sentinel review exists. Check if it's still valid (no changes after review).
+  if (( FILES_CHANGED )); then
+    # Files changed after sentinel review - sentinel is now stale, must hide it
+    echo "Hiding stale sentinel review $LAST_ID (new commits after review)..."
+    hide-pr-review -r "$REPO" "$PR_NUM" "$LAST_ID" 2>/dev/null || true
+    echo "✓ New review needed: Sentinel review hidden due to $FILES_CHANGED new file change(s)"
+    exit 0
+  fi
+  # No files changed - sentinel is still valid
   echo "Keeping sentinel review $LAST_ID (latest review is already a clean checkpoint)"
   echo "✗ New review not needed:"
-  echo "  - Latest open review is a sentinel"
+  echo "  - Latest open review is a sentinel with no changes since review"
   exit 1
 fi
 
