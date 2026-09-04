@@ -58,11 +58,23 @@ echo "════════════════════════�
 echo ""
 
 echo "🔍 Finding unresolved review threads..."
-THREADS_JSON=$(gh api graphql \
-  -f query="query {
-  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
-    pullRequest(number: $PR_NUMBER) {
-      reviewThreads(first: 50) {
+THREAD_IDS=""
+CURSOR=""
+while :; do
+  CURSOR_ARGS=()
+  if [[ -n "$CURSOR" ]]; then
+    CURSOR_ARGS=(-f cursor="$CURSOR")
+  fi
+  PAGE=$(gh api graphql \
+    -f owner="$OWNER" -f name="$REPO_NAME" -F number="$PR_NUMBER" "${CURSOR_ARGS[@]}" \
+    -f query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         edges {
           node {
             id
@@ -72,9 +84,17 @@ THREADS_JSON=$(gh api graphql \
       }
     }
   }
-}" 2>/dev/null)
+}' 2>/dev/null)
 
-THREAD_IDS=$(echo "$THREADS_JSON" | jq -r '.data.repository.pullRequest.reviewThreads.edges[] | select(.node.isResolved == false) | .node.id')
+  PAGE_IDS=$(echo "$PAGE" | jq -r '.data.repository.pullRequest.reviewThreads.edges[] | select(.node.isResolved == false) | .node.id')
+  if [[ -n "$PAGE_IDS" ]]; then
+    THREAD_IDS+="${THREAD_IDS:+$'\n'}$PAGE_IDS"
+  fi
+
+  HAS_NEXT=$(echo "$PAGE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+  [[ "$HAS_NEXT" == "true" ]] || break
+  CURSOR=$(echo "$PAGE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+done
 
 if [[ -z "$THREAD_IDS" ]]; then
   echo "✓ No unresolved review threads found"
