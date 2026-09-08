@@ -73,7 +73,9 @@ fi
 
 # --- Extract suppressed comments from each review body ---------------------
 #
-# Copilot review bodies embed suppressed comments as:
+# Copilot review bodies embed suppressed comments one of two ways observed
+# in the wild:
+#
 #   <details>
 #   <summary>Suppressed comments (N)</summary>
 #
@@ -83,6 +85,25 @@ fi
 #   optional context snippet, ignored
 #   ```
 #   </details>
+#
+# or, nested under a generic "Review details" summary instead of a
+# suppressed-specific one, as a plain markdown heading:
+#
+#   <details>
+#   <summary>Review details</summary>
+#
+#   ### Suppressed comments (N)
+#
+#   **path/to/file:LINE**
+#   * comment text
+#   ```
+#   optional context snippet, ignored
+#   ```
+#
+#   - **Files reviewed:** ...
+#   </details>
+#
+# Both forms end at the enclosing </details>.
 
 SUPPRESSED_JSON=$(
   copilot-reviews -r "$REPO" "$PR_NUMBER" --json 2>/dev/null | jq -r '.body' | awk '
@@ -98,6 +119,7 @@ SUPPRESSED_JSON=$(
       path = ""; lineno = ""; text = ""
     }
     /<summary>Suppressed comments/ { insuppressed = 1; next }
+    /^#+ Suppressed comments/ { insuppressed = 1; next }
     /<\/details>/ { if (insuppressed) { flush(); insuppressed = 0 }; next }
     !insuppressed { next }
     /^\*\*.+:[0-9]+\*\*$/ {
