@@ -513,7 +513,7 @@ or
 CHANGED=$(check-changed-files origin/main HEAD)
 if refresh-needed -r owner/repo 116 "$CHANGED"; then
   echo "✓ Ready to request new Copilot review"
-  request-pr-review -r owner/repo 116
+  reset-copilot-reviewer -r owner/repo 116
 else
   echo "✗ Address outstanding comments before requesting new review"
 fi
