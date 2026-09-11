@@ -3,7 +3,8 @@
 # Check if a Copilot review IS a sentinel (has no outstanding comments).
 #
 # A sentinel review is a clean checkpoint:
-#   1) "generated no new comments"
+#   1) reports no new comments - either the legacy phrase "generated no
+#      new comments" or the current "**Comments generated:** 0 new"
 #   2) no suppressed comments with non-zero count
 #
 # This is the opposite of not-sentinel-review.

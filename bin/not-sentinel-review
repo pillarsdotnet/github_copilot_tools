@@ -3,7 +3,9 @@
 # Check if a Copilot review is NOT a sentinel (has outstanding comments).
 #
 # A sentinel review must be a clean checkpoint:
-#   1) Review body says "generated no new comments"
+#   1) Review body reports no new comments - either the legacy phrase
+#      "generated no new comments" or the current format's
+#      "**Comments generated:** 0 new"
 #   2) It has no suppressed comments section with a non-zero count
 #
 # This script returns 0 if the review is NOT a sentinel (still has
@@ -91,7 +93,25 @@ if echo "$REVIEW_BODY" | grep -q "Copilot encountered an error"; then
   exit 1
 fi
 
-if ! echo "$REVIEW_BODY" | grep -q "generated no new comments"; then
+# Copilot has used two different body formats for a clean checkpoint:
+#
+#   legacy:  "Copilot reviewed N out of M changed files in this pull
+#             request and generated no new comments."
+#   current: a "Review details" block containing a bulleted line
+#             "- **Comments generated:** 0 new"
+#
+# Match either. Only the legacy phrase was recognized originally, so every
+# review in the current format - including a clean "Approval recommended"
+# with zero comments - was misreported as needing remediation.
+if echo "$REVIEW_BODY" | grep -q "generated no new comments"; then
+  HAS_CLEAN_MARKER=1
+elif echo "$REVIEW_BODY" | grep -Eq '\*\*Comments generated:\*\*[[:space:]]*0([[:space:]]+new)?[[:space:]]*$'; then
+  HAS_CLEAN_MARKER=1
+else
+  HAS_CLEAN_MARKER=0
+fi
+
+if [[ "$HAS_CLEAN_MARKER" -eq 0 ]]; then
   # Missing clean-checkpoint marker => NOT a sentinel
   exit 0
 fi
